@@ -47,6 +47,18 @@ describe('scheduler command', () => {
 		assert.equal(s.started(), 1);
 	});
 
+	it('starts no runner in a headless run, works on the store, and refuses run', async () => {
+		const s = setup();
+		const printed: string[] = [];
+		const ctx: CommandContext = {print: t => void printed.push(t), clear() {}, exit() {}, commandBridge: bridge, headless: true};
+		const command = createSchedulerCommand({dataDir: s.dataDir, cwd: root, log: noopLog, now: () => NOW, runner: () => assert.fail('runner created')});
+		await command.run(['add', 'in', '10m', 'cmd', 'task', 'list'], ctx);
+		await command.run(['list'], ctx);
+		assert.match(printed.join('\n'), /Scheduled #1/);
+		assert.equal(readJobs(s.dataDir).jobs.length, 1);
+		await assert.rejects(async () => command.run(['run', '1'], ctx), /needs the app/);
+	});
+
 	it('adds console lines and scripts with any schedule, and lists them by next run', async () => {
 		const s = setup();
 		assert.match(await s.run('add', 'every', '1h', 'cmd', 'task', 'list'), /^Scheduled #1: first run 2026-10-24 13:00.* \(then every 1h\)\.$/);

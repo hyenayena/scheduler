@@ -83,6 +83,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 
 	const ensureRunner = (ctx: CommandContext): boolean => {
 		if (ctx.commandBridge) bridge = ctx.commandBridge;
+		if (ctx.headless) return false;
 		if (!ctx.signal) notify = text => ctx.print(text);
 		if (runner) return false;
 		runner = (deps.runner ?? createRunner)({
@@ -237,6 +238,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 					return;
 				}
 				case 'run': {
+					if (ctx.headless) throw new Error('"scheduler run" needs the app (./yena)');
 					const job = change(idArg(rest[0], 'scheduler run <id>'), j => {
 						j.next = now();
 						delete j.paused;

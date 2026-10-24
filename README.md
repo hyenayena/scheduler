@@ -61,6 +61,10 @@ None.
 
 None. Console lines need core's command bridge (`ctx.commandBridge`, core 0.4.0+); without it only `sh` jobs run.
 
+## From the host terminal
+
+`./yena scheduler list|show|log|add|remove|pause|resume` work without the app: they edit `jobs.json` and print. No runner starts (`ctx.headless`), so nothing runs until a yena app is open, and `scheduler run <id>` is refused there (`"scheduler run" needs the app (./yena)`).
+
 ## Limits and known risks
 
 - Nothing runs while no yena app is open; there is no daemon of its own.
