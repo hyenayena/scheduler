@@ -1,0 +1,9 @@
+{
+	"name": "scheduler",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc -p . && tsc -p tests",
+		"test": "node --import tsx --test \"tests/**/*.test.ts\""
+	}
+}
