@@ -1,5 +1,5 @@
 import type {Command, CommandBridge, CommandContext, Logger, Subcommand} from '../../../src/api.js';
-import {createRunner, type Runner} from './runner.js';
+import {createRunner, redact, type Runner} from './runner.js';
 import {formatDuration, formatTime, parseSchedule} from './schedule.js';
 import {type Job, MAX_JOBS, MAX_LINE, MAX_SCRIPT, readJobs, readRuns, updateJobs} from './store.js';
 
@@ -174,8 +174,8 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		ctx.print(`  added ${formatTime(job.createdAt)}, ran ${job.runs} time${job.runs === 1 ? '' : 's'}${job.lastRun ? `, last ${formatTime(job.lastRun)}` : ''}`);
 		const runs = readRuns(deps.dataDir, id, 3);
 		for (const r of runs) {
-			ctx.print(`  ${formatTime(r.at)} ${r.status}${r.note ? ` (${r.note})` : ''}`);
-			if (r.output) ctx.print(r.output.trimEnd().split('\n').slice(-5).map(l => `    ${oneLine(l, 200)}`).join('\n'));
+			ctx.print(`  ${formatTime(r.at)} ${r.status}${r.note ? ` (${redact(deps.log, r.note)})` : ''}`);
+			if (r.output) ctx.print(redact(deps.log, r.output).trimEnd().split('\n').slice(-5).map(l => `    ${oneLine(l, 200)}`).join('\n'));
 		}
 	};
 
@@ -186,7 +186,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 			ctx.print('No runs yet.');
 			return;
 		}
-		for (const r of runs) ctx.print(`${formatTime(r.at)}  #${r.id}  ${r.status}${r.note ? ` (${oneLine(r.note, 120)})` : ''}  ${(r.ms / 1000).toFixed(1)} s`);
+		for (const r of runs) ctx.print(`${formatTime(r.at)}  #${r.id}  ${r.status}${r.note ? ` (${oneLine(redact(deps.log, r.note), 120)})` : ''}  ${(r.ms / 1000).toFixed(1)} s`);
 	};
 
 	return {

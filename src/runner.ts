@@ -2,6 +2,7 @@ import {spawn} from 'node:child_process';
 import {mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 import type {CommandBridge, Logger} from '../../../src/api.js';
+import {scriptEnv} from './env.js';
 import {nextRun} from './schedule.js';
 import {appendRun, type Job, readJobs, type RunStatus, updateJobs} from './store.js';
 
@@ -11,8 +12,6 @@ const BUSY_RETRY_MS = 30_000;
 export const CMD_TIMEOUT_MS = 10 * 60_000;
 export const SH_TIMEOUT_MS = 10 * 60_000;
 const OUTPUT_MAX = 64 * 1024;
-// Credentials never reach a scheduled script.
-const SECRET_ENV = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN'];
 
 export type ShResult = {code: number | null; output: string; timedOut: boolean};
 export type RunSh = (script: string, opts: {cwd: string; timeoutMs: number}) => Promise<ShResult>;
@@ -20,8 +19,8 @@ export type RunSh = (script: string, opts: {cwd: string; timeoutMs: number}) => 
 /** Runs a script with `sh -c` in its own process group; the group is killed on timeout. */
 export const runSh: RunSh = (script, {cwd, timeoutMs}) =>
 	new Promise(resolve => {
-		const env = {...process.env};
-		for (const k of SECRET_ENV) delete env[k];
+		// Credentials and the host's ssh-agent never reach a scheduled script.
+		const env = scriptEnv(process.env);
 		let output = '';
 		let timedOut = false;
 		const child = spawn('/bin/sh', ['-c', script], {cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
@@ -124,6 +123,9 @@ export type RunnerDeps = {
 
 export type Runner = {start(): void; stop(): void; tick(): Promise<void>; readonly leader: boolean; readonly running: ReadonlySet<number>};
 
+/** The host's redactors and secret patterns (hosts without Logger.redact: unchanged). */
+export const redact = (log: Logger, text: string): string => log.redact?.(text) ?? text;
+
 const label = (job: Job) => `#${job.id}${job.name ? ` ${job.name}` : ''}`;
 
 export function createRunner(deps: RunnerDeps): Runner {
@@ -136,7 +138,10 @@ export function createRunner(deps: RunnerDeps): Runner {
 
 	// After a run: the next time (a missed recurring run is not repeated, it moves past now), or the
 	// job ends when the schedule has no more runs. The file is read again: it may have changed meanwhile.
-	const settle = (job: Job, at: number, ms: number, status: RunStatus, note: string | undefined, output: string | undefined) => {
+	const settle = (job: Job, at: number, ms: number, status: RunStatus, rawNote: string | undefined, rawOutput: string | undefined) => {
+		// Stored output is shown to the assistant by the safe "scheduler log|show"; secrets are masked first.
+		const note = rawNote === undefined ? undefined : redact(deps.log, rawNote);
+		const output = rawOutput && redact(deps.log, rawOutput);
 		appendRun(deps.dataDir, {id: job.id, at, ms, status, ...(note !== undefined && {note}), ...(output && {output})});
 		let ended = false;
 		updateJobs(deps.dataDir, state => {
