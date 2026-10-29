@@ -14,7 +14,7 @@ Runs yena console lines and shell scripts later or repeatedly, so a user or an a
 | `scheduler run <id>` | confirm | Runs a job now; its schedule stays (a one-time job is then done) |
 | `scheduler remove <id>` (`rm`) | confirm | Deletes a job |
 | `scheduler log [<id>]` | safe | The latest 20 runs |
-| `scheduler help` | safe | The usage |
+| `scheduler help` | safe | The generated help (core); the `<when>` grammar is in the notes of `scheduler add` (`help scheduler add`) |
 | `scheduler` | safe | Started once by the UI (autostart): starts the runner and prints a one-line summary only when something is scheduled; typed later, it lists the jobs |
 
 `<when>`:

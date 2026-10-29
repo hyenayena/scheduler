@@ -16,29 +16,48 @@ export type SchedulerDeps = {
 
 const WHEN = 'in <duration> | at <time> | every <duration> | daily <HH:MM> | cron <m> <h> <dom> <mon> <dow>';
 const ADD_USAGE = `scheduler add [--name <name>] <when> <cmd|sh> <line…>   (when: ${WHEN})`;
-const USAGE = 'scheduler [list|add|show|remove|pause|resume|run|log|help]';
+// The one-line form in usage errors.
+const LINE = 'scheduler [list|add|show|remove|pause|resume|run|log|help]';
+const USAGE = 'scheduler [subcommand]';
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const ID = {name: 'id', description: 'The job number, as scheduler list shows it (#3 or 3)'};
 
 const subcommands: Subcommand[] = [
 	{name: 'list', aliases: ['ls', 'status'], usage: 'scheduler list', description: 'Jobs and when they run next', agent: 'safe'},
-	{name: 'add', usage: 'scheduler add [--name <n>] <when> <cmd|sh> <line…>', description: 'Schedule a console line (cmd) or a shell script (sh), once or repeated', agent: 'confirm'},
-	{name: 'show', usage: 'scheduler show <id>', description: 'One job and its last runs', agent: 'safe'},
-	{name: 'remove', aliases: ['rm'], usage: 'scheduler remove <id>', description: 'Delete a job', agent: 'confirm'},
-	{name: 'pause', usage: 'scheduler pause <id>', description: 'Stop a job from running until resumed', agent: 'confirm'},
-	{name: 'resume', usage: 'scheduler resume <id>', description: 'Let a paused job run again', agent: 'confirm'},
-	{name: 'run', usage: 'scheduler run <id>', description: 'Run a job now (its schedule stays)', agent: 'confirm'},
-	{name: 'log', usage: 'scheduler log [<id>]', description: 'The latest runs', agent: 'safe'},
-	{name: 'help', usage: 'scheduler help', description: 'Show the usage', agent: 'safe'},
+	{
+		name: 'add',
+		usage: 'scheduler add [--name <name>] <when> <kind> <line…>',
+		description: 'Schedule a console line (cmd) or a shell script (sh), once or repeated',
+		args: [
+			{name: 'when', description: 'When it runs: in, at, every, daily or cron, with its values'},
+			{name: 'kind', description: 'cmd (a yena console line) or sh (a shell script)'},
+			{name: 'line', description: 'The console line or the script: the rest of the line'},
+		],
+		options: [{name: '--name', value: '<name>', description: 'A name for the job (letters, digits, . _ -)'}],
+		notes: [
+			`When: ${WHEN}`,
+			'Durations: 90s, 10m, 1h30m, 2d, 1w; times: 2026-10-25T09:00, 2026-10-25, 09:00 (container time zone)',
+			'cmd runs a yena console line, as the console does for assistants',
+			'sh runs the rest of the line with /bin/sh in the yena root',
+			'Example: scheduler add daily 09:00 cmd dev check',
+		],
+		agent: 'confirm',
+	},
+	{name: 'show', usage: 'scheduler show <id>', description: 'One job and its last runs', args: [ID], agent: 'safe'},
+	{name: 'remove', aliases: ['rm'], usage: 'scheduler remove <id>', description: 'Delete a job', args: [ID], agent: 'confirm'},
+	{name: 'pause', usage: 'scheduler pause <id>', description: 'Stop a job from running until resumed', args: [ID], agent: 'confirm'},
+	{name: 'resume', usage: 'scheduler resume <id>', description: 'Let a paused job run again', args: [ID], agent: 'confirm'},
+	{name: 'run', usage: 'scheduler run <id>', description: 'Run a job now (its schedule stays)', args: [ID], agent: 'confirm'},
+	{
+		name: 'log',
+		usage: 'scheduler log [id]',
+		description: 'The latest runs',
+		args: [{name: 'id', description: 'Only the runs of this job'}],
+		agent: 'safe',
+	},
 ];
 
-const HELP = [
-	`Usage: ${USAGE}`,
-	...subcommands.map(s => `  ${s.usage.padEnd(52)}${s.description}`),
-	`When: ${WHEN}`,
-	'  durations: 90s, 10m, 1h30m, 2d, 1w; times: 2026-10-25T09:00, 2026-10-25, 09:00 (container time zone)',
-	'cmd runs a yena console line, as the console does for assistants; sh runs the rest of the line with /bin/sh in the yena root.',
-	'Jobs are kept on disk and run while yena is open; a run missed while yena was closed runs once when it opens.',
-].join('\n');
+const NOTES = ['Jobs are kept on disk and run while yena is open; a run missed while yena was closed runs once when it opens'];
 
 const oneLine = (text: string, max: number): string => {
 	const flat = text.replace(/\s+/g, ' ');
@@ -193,6 +212,8 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		name: 'scheduler',
 		description: 'Run console lines or shell scripts later or repeatedly; kept across restarts',
 		usage: USAGE,
+		args: [{name: 'subcommand', description: 'What to do (none: a summary of the jobs)'}],
+		notes: NOTES,
 		agent: 'safe',
 		// Starts the runner when the UI starts, with the console it runs lines in.
 		autostart: true,
@@ -209,8 +230,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 					if (rest.length > 0) throw new Error('Usage: scheduler list');
 					return list(ctx, false);
 				case 'help':
-					ctx.print(HELP);
-					return;
+					return ctx.showHelp ? ctx.showHelp() : ctx.print(USAGE);
 				case 'add':
 					return add(rest, ctx);
 				case 'show':
@@ -250,7 +270,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 				case 'log':
 					return log(rest[0], ctx);
 				default:
-					throw new Error(`Unknown subcommand: ${sub.slice(0, 64)}. Usage: ${USAGE}`);
+					throw new Error(`Unknown subcommand: ${sub.slice(0, 64)}. Usage: ${LINE}`);
 			}
 		},
 	};

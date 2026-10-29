@@ -110,8 +110,17 @@ describe('scheduler command', () => {
 	it('policies: reading is safe, every change asks the user when an assistant does it', () => {
 		const command = createSchedulerCommand({dataDir: path.join(root, 'p'), cwd: root, log: noopLog});
 		const policy = Object.fromEntries(command.subcommands!.map(s => [s.name, s.agent]));
-		assert.deepEqual(policy, {list: 'safe', add: 'confirm', show: 'safe', remove: 'confirm', pause: 'confirm', resume: 'confirm', run: 'confirm', log: 'safe', help: 'safe'});
+		assert.deepEqual(policy, {list: 'safe', add: 'confirm', show: 'safe', remove: 'confirm', pause: 'confirm', resume: 'confirm', run: 'confirm', log: 'safe'});
 		assert.equal(command.autostart, true);
+	});
+
+	it('help goes to core through ctx.showHelp, or prints the usage without it', async () => {
+		const s = setup();
+		assert.equal(await s.run('help'), 'scheduler [subcommand]');
+		const command = createSchedulerCommand({dataDir: path.join(root, 'h'), cwd: root, log: noopLog, runner: () => ({start() {}, stop() {}, tick: async () => {}, leader: true, running: new Set()})});
+		let shown = 0;
+		await command.run(['help'], {print() {}, clear() {}, exit() {}, showHelp: () => void shown++});
+		assert.equal(shown, 1);
 	});
 
 	it('the plugin registers the command and writes nothing at load', async () => {
