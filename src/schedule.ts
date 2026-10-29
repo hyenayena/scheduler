@@ -1,7 +1,3 @@
-/**
- * When a job runs: once at a time, every fixed interval, or by a cron expression. Times are the
- * container's local time (TZ, UTC unless set).
- */
 export type Schedule =
 	| {kind: 'once'; at: number}
 	| {kind: 'every'; everyMs: number; anchor: number}
@@ -12,7 +8,6 @@ const DURATION_RE = /^(?:\d+[smhdw])+$/;
 const MAX_MS = 366 * UNIT_MS.d!;
 export const MIN_EVERY_MS = UNIT_MS.m!;
 
-/** "90s", "10m", "1h30m", "2d", "1w" in milliseconds. */
 export function parseDuration(text: string | undefined): number {
 	if (text === undefined || !DURATION_RE.test(text)) throw new Error('A duration is a number with s, m, h, d or w, e.g. 10m, 1h30m, 2d');
 	let ms = 0;
@@ -34,10 +29,6 @@ export function formatDuration(ms: number): string {
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
-/**
- * "2026-10-25T09:00" (or with seconds, "Z" or an offset), "2026-10-25" (midnight) or "09:00" (the next
- * time it is 09:00) in epoch milliseconds.
- */
 export function parseAt(text: string | undefined, now: number): number {
 	if (text === undefined) throw new Error('Give a time: 2026-10-25T09:00, 2026-10-25 or 09:00');
 	const clock = /^(\d{1,2}):(\d{2})$/.exec(text);
@@ -58,8 +49,6 @@ export function parseAt(text: string | undefined, now: number): number {
 	if (!Number.isFinite(ms) || (!zone && (check.getMonth() !== Number(mo) - 1 || check.getDate() !== Number(da)))) throw new Error(`Invalid time "${text}"`);
 	return ms;
 }
-
-// ---- cron: minute hour day-of-month month day-of-week ----
 
 type Field = {set: Set<number>; star: boolean};
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
@@ -106,7 +95,6 @@ export function parseCron(expr: string): Cron {
 	return {minute, hour, dom, month, dow};
 }
 
-// As in cron: with both day fields restricted, either one matching is enough.
 function dayMatches(c: Cron, d: Date): boolean {
 	const dom = c.dom.set.has(d.getDate());
 	const dow = c.dow.set.has(d.getDay());
@@ -118,7 +106,6 @@ function dayMatches(c: Cron, d: Date): boolean {
 
 const HORIZON_MS = 5 * 366 * UNIT_MS.d!;
 
-/** The first minute after `after` that the expression matches; undefined when there is none within 5 years. */
 export function nextCron(c: Cron, after: number): number | undefined {
 	const d = new Date(after);
 	d.setSeconds(0, 0);
@@ -142,7 +129,6 @@ export function nextCron(c: Cron, after: number): number | undefined {
 	return undefined;
 }
 
-/** The next run strictly after `after`; undefined when the schedule has no more runs. */
 export function nextRun(s: Schedule, after: number): number | undefined {
 	switch (s.kind) {
 		case 'once':
@@ -157,11 +143,6 @@ export function nextRun(s: Schedule, after: number): number | undefined {
 	}
 }
 
-/**
- * Reads a schedule from the start of the arguments:
- *   in <duration> | at <time> | every <duration> | daily <HH:MM> | cron <m> <h> <dom> <mon> <dow>
- * and returns it with the arguments after it and the first run.
- */
 export function parseSchedule(args: string[], now: number): {schedule: Schedule; text: string; first: number; rest: string[]} {
 	const [word, ...after] = args;
 	let schedule: Schedule;
@@ -204,7 +185,6 @@ export function parseSchedule(args: string[], now: number): {schedule: Schedule;
 	return {schedule, text: args.slice(0, used).join(' '), first, rest: args.slice(used)};
 }
 
-/** A time for people, with the zone: "2026-10-25 09:00 UTC". */
 export function formatTime(ms: number): string {
 	const d = new Date(ms);
 	const zone = new Intl.DateTimeFormat('en-GB', {timeZoneName: 'short'}).formatToParts(d).find(p => p.type === 'timeZoneName')?.value ?? '';

@@ -3,7 +3,6 @@ import {appendFileSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, 
 import path from 'node:path';
 import type {Schedule} from './schedule.js';
 
-/** What a job does: a yena console line (as if typed in the console) or a shell script. */
 export type JobAction = {kind: 'cmd'; line: string} | {kind: 'sh'; script: string};
 
 export type RunStatus = 'ok' | 'error' | 'timeout';
@@ -12,10 +11,8 @@ export type Job = {
 	id: number;
 	name?: string;
 	schedule: Schedule;
-	// The schedule as it was given ("every 1h"), for display.
 	when: string;
 	action: JobAction;
-	// Epoch ms of the next run.
 	next: number;
 	paused?: boolean;
 	createdAt: number;
@@ -98,7 +95,6 @@ function parseJob(v: unknown): Job | undefined {
 	};
 }
 
-/** The jobs on disk; a missing or broken file reads as none (a broken one is kept aside, never overwritten silently). */
 export function readJobs(dataDir: string): {nextId: number; jobs: Job[]} {
 	const text = readText(jobsFile(dataDir));
 	if (text === undefined) return {nextId: 1, jobs: []};
@@ -118,7 +114,6 @@ export function readJobs(dataDir: string): {nextId: number; jobs: Job[]} {
 	return {nextId, jobs};
 }
 
-/** Changes the jobs in one read-modify-write; returns what `change` returns. */
 export function updateJobs<T>(dataDir: string, change: (state: {nextId: number; jobs: Job[]}) => T): T {
 	const state = readJobs(dataDir);
 	const out = change(state);
@@ -127,7 +122,6 @@ export function updateJobs<T>(dataDir: string, change: (state: {nextId: number; 
 	return out;
 }
 
-/** Appends a run to the log, keeping the latest ones only. */
 export function appendRun(dataDir: string, run: RunRecord): void {
 	const record = {...run, ...(run.output !== undefined && {output: run.output.slice(-OUTPUT_KEEP)})};
 	mkdirSync(dataDir, {recursive: true, mode: 0o700});

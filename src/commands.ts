@@ -4,19 +4,15 @@ import {formatDuration, formatTime, parseSchedule} from './schedule.js';
 import {type Job, MAX_JOBS, MAX_LINE, MAX_SCRIPT, readJobs, readRuns, updateJobs} from './store.js';
 
 export type SchedulerDeps = {
-	/** The module's own data dir: jobs.json, runs.jsonl, runner.lock. */
 	dataDir: string;
-	/** Where shell jobs run (the yena root). */
 	cwd: string;
 	log: Logger;
 	now?: () => number;
-	/** For tests: a runner instead of the real one. */
 	runner?: (deps: Parameters<typeof createRunner>[0]) => Runner;
 };
 
 const WHEN = 'in <duration> | at <time> | every <duration> | daily <HH:MM> | cron <m> <h> <dom> <mon> <dow>';
 const ADD_USAGE = `scheduler add [--name <name>] <when> <cmd|sh> <line…>   (when: ${WHEN})`;
-// The one-line form in usage errors.
 const LINE = 'scheduler [list|add|show|remove|pause|resume|run|log|help]';
 const USAGE = 'scheduler [subcommand]';
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -78,8 +74,6 @@ const idArg = (raw: string | undefined, usage: string): number => {
 	return id;
 };
 
-// The console's own policy for the line, when the console can tell: a command assistants may not run
-// cannot be scheduled either (the scheduler runs lines the way assistants do).
 function checkLine(line: string, bridge: CommandBridge | undefined): void {
 	const [name, first] = line.split(/\s+/);
 	if (name === 'scheduler') throw new Error('A job cannot run scheduler commands');
@@ -95,7 +89,6 @@ function checkLine(line: string, bridge: CommandBridge | undefined): void {
 
 export function createSchedulerCommand(deps: SchedulerDeps): Command {
 	const now = deps.now ?? Date.now;
-	// The console comes with the first context the command gets (the autostart at UI start).
 	let bridge: CommandBridge | undefined;
 	let notify: (text: string) => void = () => {};
 	let runner: Runner | undefined;
@@ -215,14 +208,12 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		args: [{name: 'subcommand', description: 'What to do (none: a summary of the jobs)'}],
 		notes: NOTES,
 		agent: 'safe',
-		// Starts the runner when the UI starts, with the console it runs lines in.
 		autostart: true,
 		subcommands,
 		async run([sub, ...rest], ctx) {
 			const first = ensureRunner(ctx);
 			switch (sub) {
 				case undefined:
-					// At start-up only a summary, and only when something is scheduled.
 					return list(ctx, first);
 				case 'list':
 				case 'ls':

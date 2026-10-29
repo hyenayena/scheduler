@@ -60,7 +60,6 @@ describe('runner', () => {
 		assert.deepEqual([recurring.next, recurring.runs, recurring.lastStatus], [1_060_000, 1, 'ok']);
 		assert.deepEqual(readRuns(dataDir).map(x => [x.id, x.status]), [[1, 'ok'], [2, 'ok']]);
 		assert.ok(notes.some(t => t === '[scheduler] #2 (sh): ok in 0.0 s; done'));
-		// Missed for a long time: it runs once, and the next run is the next slot after now.
 		now = 1_000_000 + 10 * 60_000 + 30_000;
 		await r.tick();
 		assert.equal(runs.length, 2);

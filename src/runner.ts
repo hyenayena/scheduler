@@ -7,7 +7,6 @@ import {nextRun} from './schedule.js';
 import {appendRun, type Job, readJobs, type RunStatus, updateJobs} from './store.js';
 
 export const TICK_MS = 15_000;
-// A console line waits this long when another assistant command holds the console.
 const BUSY_RETRY_MS = 30_000;
 export const CMD_TIMEOUT_MS = 10 * 60_000;
 export const SH_TIMEOUT_MS = 10 * 60_000;
@@ -16,10 +15,8 @@ const OUTPUT_MAX = 64 * 1024;
 export type ShResult = {code: number | null; output: string; timedOut: boolean};
 export type RunSh = (script: string, opts: {cwd: string; timeoutMs: number}) => Promise<ShResult>;
 
-/** Runs a script with `sh -c` in its own process group; the group is killed on timeout. */
 export const runSh: RunSh = (script, {cwd, timeoutMs}) =>
 	new Promise(resolve => {
-		// Credentials and the host's ssh-agent never reach a scheduled script.
 		const env = scriptEnv(process.env);
 		let output = '';
 		let timedOut = false;
@@ -46,11 +43,8 @@ export const runSh: RunSh = (script, {cwd, timeoutMs}) =>
 		});
 	});
 
-// ---- one runner per container: the yena process holding the lock runs the jobs ----
-
 type Holder = {pid: number; start?: string};
 
-// The process start time, so a pid reused after a restart does not count as the old holder.
 const startOf = (pid: number): string | undefined => {
 	try {
 		return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1)!.split(' ')[19];
@@ -109,12 +103,9 @@ export function createLeaderLock(dataDir: string): {acquire(): boolean; release(
 
 export type RunnerDeps = {
 	dataDir: string;
-	/** Where scripts run (the yena root). */
 	cwd: string;
 	log: Logger;
-	/** The console's command bridge, once a yena console exists. */
 	bridge: () => CommandBridge | undefined;
-	/** A one-line notice for the user. */
 	notify: (text: string) => void;
 	now?: () => number;
 	runSh?: RunSh;
@@ -123,7 +114,6 @@ export type RunnerDeps = {
 
 export type Runner = {start(): void; stop(): void; tick(): Promise<void>; readonly leader: boolean; readonly running: ReadonlySet<number>};
 
-/** The host's redactors and secret patterns (hosts without Logger.redact: unchanged). */
 export const redact = (log: Logger, text: string): string => log.redact?.(text) ?? text;
 
 const label = (job: Job) => `#${job.id}${job.name ? ` ${job.name}` : ''}`;
@@ -136,10 +126,7 @@ export function createRunner(deps: RunnerDeps): Runner {
 	let timer: NodeJS.Timeout | undefined;
 	let ticking = false;
 
-	// After a run: the next time (a missed recurring run is not repeated, it moves past now), or the
-	// job ends when the schedule has no more runs. The file is read again: it may have changed meanwhile.
 	const settle = (job: Job, at: number, ms: number, status: RunStatus, rawNote: string | undefined, rawOutput: string | undefined) => {
-		// Stored output is shown to the assistant by the safe "scheduler log|show"; secrets are masked first.
 		const note = rawNote === undefined ? undefined : redact(deps.log, rawNote);
 		const output = rawOutput && redact(deps.log, rawOutput);
 		appendRun(deps.dataDir, {id: job.id, at, ms, status, ...(note !== undefined && {note}), ...(output && {output})});
@@ -176,10 +163,8 @@ export function createRunner(deps: RunnerDeps): Runner {
 		}
 		const bridge = deps.bridge();
 		if (!bridge) {
-			// No console yet (yena is still starting): the job stays due for the next tick.
 			return;
 		}
-		// The user, or an assistant with the user's approval, added this line; it runs without asking again.
 		const r = await bridge.run({line: job.action.line, caller: 'scheduler', confirm: async () => true, timeoutMs: CMD_TIMEOUT_MS});
 		if (r.status === 'busy') {
 			delay(job, BUSY_RETRY_MS);
@@ -199,7 +184,6 @@ export function createRunner(deps: RunnerDeps): Runner {
 			const due = readJobs(deps.dataDir).jobs.filter(j => !j.paused && j.next <= t && !running.has(j.id));
 			for (const job of due) {
 				running.add(job.id);
-				// Scripts run side by side; console lines one after another (the console runs one at a time).
 				const p = execute(job)
 					.catch(err => deps.log.warn('job failed to run', {errClass: err instanceof Error ? err.name : typeof err}))
 					.finally(() => running.delete(job.id));

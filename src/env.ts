@@ -1,5 +1,3 @@
-// The environment of a scheduled script: everything that looks like a credential is left out, as in the
-// claude chat's Bash (claude src/config.ts scrubChatEnv). A job that needs a secret reads it itself.
 const SECRET_NAMES = [
 	/^AWS_|TOKEN|SECRET|PASSW|API_?KEY|CREDENTIAL/i,
 	/PRIVATE|COOKIE|AUTH/i,
@@ -12,7 +10,6 @@ const SECRET_NAMES = [
 	/ENCRYPTION_?KEY|MASTER_?KEY|SESSION_?(KEY|SECRET)/i,
 ];
 
-// The host's ssh-agent (compose mounts it for module installs) must not sign for a script.
 const SSH_AGENT = new Set(['SSH_AUTH_SOCK', 'SSH_AGENT_PID']);
 
 const SAFE_NAME =
@@ -20,7 +17,6 @@ const SAFE_NAME =
 
 const SCAN_MAX = 8192;
 
-// scheme://user[:pass]@ in the first 8 KiB of a value.
 function hasUserinfo(value: string): boolean {
 	const v = value.length > SCAN_MAX ? value.slice(0, SCAN_MAX) : value;
 	let i = v.indexOf('://');
