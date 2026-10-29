@@ -1,0 +1,14 @@
+# Claude Code's Bash sandbox shows these as placeholders in the folder it runs from
+.claude/
+.mcp.json
+.vscode
+.bashrc
+.bash_profile
+.zshrc
+.zprofile
+.profile
+.gitconfig
+.gitmodules
+.ripgreprc
+CLAUDE.md
+CLAUDE.local.md
