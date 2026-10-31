@@ -13,7 +13,7 @@ after(() => rmSync(root, {recursive: true, force: true}));
 let n = 0;
 const dir = () => path.join(root, `d${n++}`);
 
-const job = (over: Partial<Job> & Pick<Job, 'id' | 'action' | 'schedule' | 'next'>): Job => ({when: 'test', createdAt: 0, runs: 0, ...over});
+const job = (over: Partial<Job> & Pick<Job, 'id' | 'action' | 'schedule' | 'next'>): Job => ({when: 'test', createdAt: 0, runs: 0, by: 'user', ...over});
 const put = (dataDir: string, jobs: Job[]) =>
 	updateJobs(dataDir, s => {
 		s.jobs = jobs;
@@ -83,7 +83,50 @@ describe('runner', () => {
 		current = fakeBridge(() => ({status: 'denied', reason: 'this command is not available to assistants'})).bridge;
 		await r.tick();
 		const [run] = readRuns(dataDir);
-		assert.deepEqual([run!.status, run!.note], ['error', 'this command is not available to assistants']);
+		assert.deepEqual([run!.status, run!.note], ['refused', 'this command is not available to assistants']);
+		assert.equal(readJobs(dataDir).jobs[0]!.lastStatus, 'refused');
+		r.stop();
+	});
+
+	it("runs the console lines of an assistant's or an old job without approval and records refusals", async () => {
+		const dataDir = dir();
+		const now = 6_000_000;
+		const every = {kind: 'every', everyMs: 60_000, anchor: 0} as const;
+		put(dataDir, [
+			job({id: 1, action: {kind: 'cmd', line: 'task list'}, schedule: every, next: now, by: 'assistant'}),
+			job({id: 2, action: {kind: 'cmd', line: 'task new x'}, schedule: every, next: now, by: 'legacy'}),
+		]);
+		const {bridge, runs} = fakeBridge(req => (req.line === 'task new x' ? {status: 'declined', reason: 'this caller cannot ask the user'} : {}));
+		const r = createRunner({dataDir, cwd: '/', log: noopLog, bridge: () => bridge, notify: () => {}, now: () => now});
+		await r.tick();
+		assert.deepEqual(runs.map(x => [x.line, x.confirm]), [['task list', undefined], ['task new x', undefined]]);
+		assert.deepEqual(readRuns(dataDir).map(x => [x.id, x.status, x.note]), [[1, 'ok', undefined], [2, 'refused', 'this caller cannot ask the user']]);
+		const {jobs} = readJobs(dataDir);
+		assert.deepEqual(jobs.map(j => [j.lastStatus, j.paused ?? false]), [['ok', false], ['refused', false]]);
+		r.stop();
+	});
+
+	it('refuses the scripts of an assistant or an old job without running them, and pauses a repeating one', async () => {
+		const dataDir = dir();
+		const now = 7_000_000;
+		put(dataDir, [
+			job({id: 1, action: {kind: 'sh', script: 'rm -rf x'}, schedule: {kind: 'every', everyMs: 60_000, anchor: 0}, next: now, by: 'legacy'}),
+			job({id: 2, action: {kind: 'sh', script: 'echo y'}, schedule: {kind: 'once', at: now}, next: now, by: 'assistant'}),
+		]);
+		const scripts: string[] = [];
+		const sh: RunSh = async script => (scripts.push(script), {code: 0, output: '', timedOut: false});
+		const notes: string[] = [];
+		const r = createRunner({dataDir, cwd: '/', log: noopLog, bridge: () => undefined, notify: t => notes.push(t), now: () => now, runSh: sh});
+		await r.tick();
+		await new Promise(res => setImmediate(res));
+		assert.deepEqual(scripts, []);
+		const runs = readRuns(dataDir);
+		assert.deepEqual(runs.map(x => [x.id, x.status]), [[1, 'refused'], [2, 'refused']]);
+		assert.ok(runs.every(x => x.note === 'only the user can schedule scripts; add it again yourself'));
+		const {jobs} = readJobs(dataDir);
+		assert.deepEqual(jobs.map(j => [j.id, j.paused, j.lastStatus]), [[1, true, 'refused']], 'the one-time job is removed');
+		assert.ok(notes.some(t => t.startsWith('[scheduler] #1 (sh): refused') && t.endsWith('; paused')));
+		assert.ok(notes.some(t => t.startsWith('[scheduler] #2 (sh): refused') && t.endsWith('; done')));
 		r.stop();
 	});
 

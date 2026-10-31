@@ -5,7 +5,7 @@ import type {Schedule} from './schedule.js';
 
 export type JobAction = {kind: 'cmd'; line: string} | {kind: 'sh'; script: string};
 
-export type RunStatus = 'ok' | 'error' | 'timeout';
+export type RunStatus = 'ok' | 'error' | 'timeout' | 'refused';
 
 export type Job = {
 	id: number;
@@ -19,6 +19,7 @@ export type Job = {
 	runs: number;
 	lastRun?: number;
 	lastStatus?: RunStatus;
+	by: 'user' | 'assistant' | 'legacy';
 };
 
 export type RunRecord = {id: number; at: number; ms: number; status: RunStatus; note?: string; output?: string};
@@ -91,7 +92,8 @@ function parseJob(v: unknown): Job | undefined {
 		createdAt: v.createdAt,
 		runs: Number.isInteger(v.runs) ? (v.runs as number) : 0,
 		...(isTime(v.lastRun) && {lastRun: v.lastRun}),
-		...((v.lastStatus === 'ok' || v.lastStatus === 'error' || v.lastStatus === 'timeout') && {lastStatus: v.lastStatus}),
+		...((v.lastStatus === 'ok' || v.lastStatus === 'error' || v.lastStatus === 'timeout' || v.lastStatus === 'refused') && {lastStatus: v.lastStatus}),
+		by: v.by === 'user' || v.by === 'assistant' ? v.by : 'legacy',
 	};
 }
 

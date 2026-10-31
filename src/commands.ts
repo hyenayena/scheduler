@@ -1,5 +1,6 @@
 import type {Command, CommandBridge, CommandContext, Logger, Subcommand} from '../../../src/api.js';
 import {createRunner, redact, type Runner} from './runner.js';
+import {resolveCommandLine} from './deps/core.js';
 import {formatDuration, formatTime, parseSchedule} from './schedule.js';
 import {type Job, MAX_JOBS, MAX_LINE, MAX_SCRIPT, readJobs, readRuns, updateJobs} from './store.js';
 
@@ -33,7 +34,9 @@ const subcommands: Subcommand[] = [
 		notes: [
 			`When: ${WHEN}`,
 			'Durations: 90s, 10m, 1h30m, 2d, 1w; times: 2026-10-25T09:00, 2026-10-25, 09:00 (container time zone)',
-			'cmd runs a yena console line, as the console does for assistants',
+			'cmd runs a yena console line; the user may schedule any line except those not available to assistants',
+			'An assistant may schedule only lines it may run without asking, and no scripts',
+			'A job added by an assistant (or before 0.3.0) runs only what assistants may run without asking at run time',
 			'sh runs the rest of the line with /bin/sh in the yena root',
 			'Example: scheduler add daily 09:00 cmd dev check',
 		],
@@ -65,7 +68,8 @@ const actionText = (job: Job): string => (job.action.kind === 'cmd' ? `cmd ${job
 function jobLine(job: Job, running: boolean): string {
 	const state = job.paused ? 'paused' : running ? 'running' : `next ${formatTime(job.next)}`;
 	const last = job.lastStatus ? ` · last ${job.lastStatus}` : '';
-	return `#${job.id}${job.name ? ` ${job.name}` : ''}  ${job.when}  ${state}${last}  ${oneLine(actionText(job), 80)}`;
+	const by = job.by === 'assistant' ? ' · by an assistant' : job.by === 'legacy' ? ' · from before 0.3.0' : '';
+	return `#${job.id}${job.name ? ` ${job.name}` : ''}  ${job.when}  ${state}${last}${by}  ${oneLine(actionText(job), 80)}`;
 }
 
 const idArg = (raw: string | undefined, usage: string): number => {
@@ -74,16 +78,25 @@ const idArg = (raw: string | undefined, usage: string): number => {
 	return id;
 };
 
-function checkLine(line: string, bridge: CommandBridge | undefined): void {
-	const [name, first] = line.split(/\s+/);
-	if (name === 'scheduler') throw new Error('A job cannot run scheduler commands');
+type By = 'user' | 'assistant';
+
+const NO_SCHEDULER = 'A job cannot run scheduler commands';
+
+function checkLine(line: string, bridge: CommandBridge | undefined, by: By): void {
+	const name = line.trim().split(/\s+/)[0] ?? '';
+	if (name === 'scheduler') throw new Error(NO_SCHEDULER);
 	const list = bridge?.list() ?? [];
-	if (list.length === 0) return;
-	const info = list.find(c => c.name === name);
-	if (!info) throw new Error(`Unknown command "${oneLine(name ?? '', 40)}"; "help" lists them`);
-	const sub = first === undefined ? undefined : info.subcommands.find(s => s.name === first || s.aliases.includes(first));
-	if ((sub?.policy ?? info.policy) === 'deny') {
-		throw new Error(`"${name}${sub ? ` ${sub.name}` : ''}" cannot be run by the scheduler (it is not available to assistants)`);
+	if (list.length === 0) {
+		if (by === 'assistant') throw new Error('The scheduler cannot check this line yet; ask the user to add the job');
+		return;
+	}
+	const r = resolveCommandLine(list, line);
+	if (!r) throw new Error(`Unknown command "${oneLine(name, 40)}"; "help" lists them`);
+	if (r.command === 'scheduler') throw new Error(NO_SCHEDULER);
+	const path = r.subcommand ? `${r.command} ${r.subcommand}` : r.command;
+	if (r.policy === 'deny') throw new Error(`"${path}" cannot be run by the scheduler (it is not available to assistants)`);
+	if (by === 'assistant' && r.policy !== 'safe') {
+		throw new Error(`"${path}" needs the user's approval each time, so an assistant cannot schedule it; ask the user to add the job`);
 	}
 }
 
@@ -140,10 +153,14 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		const [kind, ...body] = parsed.rest;
 		const text = body.join(' ').trim();
 		if ((kind !== 'cmd' && kind !== 'sh') || text === '') throw new Error(`After the schedule comes "cmd <console line>" or "sh <script>". Usage: ${ADD_USAGE}`);
+		const by: By = ctx.signal !== undefined ? 'assistant' : 'user';
 		if (kind === 'cmd') {
 			if (text.length > MAX_LINE) throw new Error(`A console line is at most ${MAX_LINE} characters`);
-			checkLine(text, bridge);
-		} else if (text.length > MAX_SCRIPT) throw new Error(`A script is at most ${MAX_SCRIPT} characters; put a longer one in a file and run that`);
+			checkLine(text, bridge, by);
+		} else {
+			if (text.length > MAX_SCRIPT) throw new Error(`A script is at most ${MAX_SCRIPT} characters; put a longer one in a file and run that`);
+			if (by === 'assistant') throw new Error('An assistant cannot schedule shell scripts; ask the user to add it');
+		}
 		const job = updateJobs(deps.dataDir, state => {
 			if (state.jobs.length >= MAX_JOBS) throw new Error(`At most ${MAX_JOBS} jobs`);
 			if (name !== undefined && state.jobs.some(j => j.name === name)) throw new Error(`A job is already named "${name}"`);
@@ -156,11 +173,12 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 				next: parsed.first,
 				createdAt: t,
 				runs: 0,
+				by,
 			};
 			state.jobs.push(created);
 			return created;
 		});
-		deps.log.info('job added', {kind, schedule: job.schedule.kind, byCaller: ctx.signal !== undefined});
+		deps.log.info('job added', {kind, schedule: job.schedule.kind, by});
 		const repeat = job.schedule.kind === 'every' ? ` (then every ${formatDuration(job.schedule.everyMs)})` : job.schedule.kind === 'cron' ? ' (then by its cron schedule)' : '';
 		ctx.print(`Scheduled #${job.id}${name ? ` ${name}` : ''}: first run ${formatTime(job.next)}${repeat}.`);
 	};
@@ -183,7 +201,8 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		const job = find(id);
 		ctx.print(jobLine(job, runner?.running.has(job.id) ?? false));
 		ctx.print(`  ${job.action.kind === 'cmd' ? 'console line' : 'script'}: ${job.action.kind === 'cmd' ? job.action.line : job.action.script}`);
-		ctx.print(`  added ${formatTime(job.createdAt)}, ran ${job.runs} time${job.runs === 1 ? '' : 's'}${job.lastRun ? `, last ${formatTime(job.lastRun)}` : ''}`);
+		const by = job.by === 'assistant' ? ' by an assistant' : job.by === 'legacy' ? " before 0.3.0 (treated as an assistant's)" : '';
+		ctx.print(`  added ${formatTime(job.createdAt)}${by}, ran ${job.runs} time${job.runs === 1 ? '' : 's'}${job.lastRun ? `, last ${formatTime(job.lastRun)}` : ''}`);
 		const runs = readRuns(deps.dataDir, id, 3);
 		for (const r of runs) {
 			ctx.print(`  ${formatTime(r.at)} ${r.status}${r.note ? ` (${redact(deps.log, r.note)})` : ''}`);

@@ -37,7 +37,7 @@ describe('stored run output', () => {
 	it('is masked with the host redactors before it is stored', async () => {
 		const dataDir = path.join(root, 'd');
 		updateJobs(dataDir, s => {
-			s.jobs = [{id: 1, when: 'test', createdAt: 0, runs: 0, next: 1, action: {kind: 'sh', script: 'x'}, schedule: {kind: 'once', at: 1}} as never];
+			s.jobs = [{id: 1, when: 'test', createdAt: 0, runs: 0, by: 'user', next: 1, action: {kind: 'sh', script: 'x'}, schedule: {kind: 'once', at: 1}} as never];
 			s.nextId = 2;
 		});
 		const log: Logger = {...noopLog, child: () => log, redact: t => t.split('s3cr3t').join('[redacted]')};

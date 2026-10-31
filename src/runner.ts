@@ -126,11 +126,12 @@ export function createRunner(deps: RunnerDeps): Runner {
 	let timer: NodeJS.Timeout | undefined;
 	let ticking = false;
 
-	const settle = (job: Job, at: number, ms: number, status: RunStatus, rawNote: string | undefined, rawOutput: string | undefined) => {
+	const settle = (job: Job, at: number, ms: number, status: RunStatus, rawNote: string | undefined, rawOutput: string | undefined, pause?: boolean) => {
 		const note = rawNote === undefined ? undefined : redact(deps.log, rawNote);
 		const output = rawOutput && redact(deps.log, rawOutput);
 		appendRun(deps.dataDir, {id: job.id, at, ms, status, ...(note !== undefined && {note}), ...(output && {output})});
 		let ended = false;
+		let paused = false;
 		updateJobs(deps.dataDir, state => {
 			const current = state.jobs.find(j => j.id === job.id);
 			if (!current) return;
@@ -141,10 +142,14 @@ export function createRunner(deps: RunnerDeps): Runner {
 				return;
 			}
 			Object.assign(current, {next, runs: current.runs + 1, lastRun: at, lastStatus: status});
+			if (pause) {
+				current.paused = true;
+				paused = true;
+			}
 		});
-		const text = `[scheduler] ${label(job)} (${job.action.kind}): ${status}${note ? ` — ${note}` : ''} in ${(ms / 1000).toFixed(1)} s${ended ? '; done' : ''}`;
+		const text = `[scheduler] ${label(job)} (${job.action.kind}): ${status}${note ? ` — ${note}` : ''} in ${(ms / 1000).toFixed(1)} s${ended ? '; done' : ''}${paused ? '; paused' : ''}`;
 		deps.notify(text);
-		deps.log.info('job ran', {kind: job.action.kind, status, ms, ended});
+		deps.log.info('job ran', {kind: job.action.kind, status, ms, ended, by: job.by});
 	};
 
 	const delay = (job: Job, ms: number) =>
@@ -156,6 +161,10 @@ export function createRunner(deps: RunnerDeps): Runner {
 	const execute = async (job: Job): Promise<void> => {
 		const at = now();
 		if (job.action.kind === 'sh') {
+			if (job.by !== 'user') {
+				settle(job, at, 0, 'refused', 'only the user can schedule scripts; add it again yourself', undefined, true);
+				return;
+			}
 			const r = await sh(job.action.script, {cwd: deps.cwd, timeoutMs: SH_TIMEOUT_MS});
 			const status: RunStatus = r.timedOut ? 'timeout' : r.code === 0 ? 'ok' : 'error';
 			settle(job, at, now() - at, status, status === 'error' ? `exit ${r.code ?? 'signal'}` : undefined, r.output);
@@ -165,13 +174,13 @@ export function createRunner(deps: RunnerDeps): Runner {
 		if (!bridge) {
 			return;
 		}
-		const r = await bridge.run({line: job.action.line, caller: 'scheduler', confirm: async () => true, timeoutMs: CMD_TIMEOUT_MS});
+		const r = await bridge.run({line: job.action.line, caller: 'scheduler', ...(job.by === 'user' && {confirm: async () => true}), timeoutMs: CMD_TIMEOUT_MS});
 		if (r.status === 'busy') {
 			delay(job, BUSY_RETRY_MS);
 			deps.log.debug('job delayed', {reason: 'busy'});
 			return;
 		}
-		const status: RunStatus = r.status === 'ok' ? 'ok' : r.status === 'timeout' ? 'timeout' : 'error';
+		const status: RunStatus = r.status === 'ok' ? 'ok' : r.status === 'timeout' ? 'timeout' : r.status === 'denied' || r.status === 'declined' ? 'refused' : 'error';
 		settle(job, at, r.ms, status, status === 'ok' ? undefined : (r.reason ?? r.status), r.output);
 	};
 

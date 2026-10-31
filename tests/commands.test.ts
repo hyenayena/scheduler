@@ -8,7 +8,7 @@ import {createSchedulerCommand} from '../src/commands.js';
 import {noopLog} from '../src/log.js';
 import plugin from '../src/index.js';
 import type {Runner} from '../src/runner.js';
-import {readJobs} from '../src/store.js';
+import {readJobs, updateJobs} from '../src/store.js';
 
 const root = mkdtempSync(path.join(tmpdir(), 'scheduler-cmd-'));
 after(() => rmSync(root, {recursive: true, force: true}));
@@ -16,8 +16,25 @@ let n = 0;
 
 const NOW = new Date(2026, 9, 24, 12, 0).getTime();
 const commands: CommandInfo[] = [
-	{name: 'task', description: '', policy: 'safe', subcommands: [{name: 'list', aliases: ['ls'], usage: '', description: '', policy: 'safe'}]},
-	{name: 'claude', description: '', policy: 'deny', subcommands: [{name: 'start', aliases: [], usage: '', description: '', policy: 'confirm'}]},
+	{
+		name: 'task',
+		description: '',
+		policy: 'safe',
+		subcommands: [
+			{name: 'list', aliases: ['ls'], usage: '', description: '', policy: 'safe'},
+			{name: 'new', aliases: [], usage: '', description: '', policy: 'confirm'},
+		],
+	},
+	{
+		name: 'claude',
+		description: '',
+		policy: 'deny',
+		subcommands: [
+			{name: 'start', aliases: [], usage: '', description: '', policy: 'confirm'},
+			{name: 'auth', aliases: [], usage: '', description: '', policy: 'confirm', subcommands: [{name: 'login', aliases: [], usage: '', description: '', policy: 'deny'}]},
+		],
+	},
+	{name: 'account', description: '', policy: 'safe', subcommands: [{name: 'grant', aliases: [], usage: '', description: '', policy: 'deny'}]},
 	{name: 'chat', description: '', policy: 'deny', subcommands: []},
 ];
 const bridge: CommandBridge = {list: () => commands, run: async () => ({status: 'ok', output: '', truncated: false, ms: 1})};
@@ -35,8 +52,15 @@ const setup = () => {
 		await command.run(args, ctx);
 		return printed.join('\n');
 	};
-	return {dataDir, run, started: () => started, ticks: () => ticks};
+	const runWith = async (other: Partial<CommandContext>, ...args: string[]) => {
+		printed.length = 0;
+		await command.run(args, {print: t => void printed.push(t), clear() {}, exit() {}, ...other});
+		return printed.join('\n');
+	};
+	return {dataDir, run, runWith, started: () => started, ticks: () => ticks};
 };
+
+const assistant = (): Partial<CommandContext> => ({signal: new AbortController().signal});
 
 describe('scheduler command', () => {
 	it('starts the runner on its first call (the autostart) and says nothing while nothing is scheduled', async () => {
@@ -88,6 +112,69 @@ describe('scheduler command', () => {
 		await s.run('add', '--name', 'x', 'in', '1m', 'sh', 'true');
 		await assert.rejects(s.run('add', '--name', 'x', 'in', '1m', 'sh', 'true'), /already named "x"/);
 		assert.equal(readJobs(s.dataDir).jobs.length, 1);
+	});
+
+	it('the user may schedule any line but those not available to assistants, at any depth', async () => {
+		const s = setup();
+		await assert.rejects(s.run('add', 'in', '1m', 'cmd', 'claude', 'auth', 'login'), /"claude auth login" cannot be run by the scheduler/);
+		await assert.rejects(s.run('add', 'in', '1m', 'cmd', 'account', 'grant', 'x'), /"account grant" cannot be run by the scheduler/);
+		assert.equal(readJobs(s.dataDir).jobs.length, 0);
+		await s.run('add', 'in', '1m', 'cmd', 'claude', 'start', 'hello');
+		await s.run('add', 'in', '1m', 'cmd', 'task', 'new', 'x');
+		await s.run('add', 'in', '1m', 'cmd', 'claude', 'auth');
+		assert.deepEqual(readJobs(s.dataDir).jobs.map(j => [j.action.kind === 'cmd' && j.action.line, j.by]), [
+			['claude start hello', 'user'],
+			['task new x', 'user'],
+			['claude auth', 'user'],
+		]);
+	});
+
+	it('an assistant may schedule only lines it may run without asking, and no scripts', async () => {
+		const s = setup();
+		await s.run();
+		await s.runWith(assistant(), 'add', 'in', '1m', 'cmd', 'task', 'list');
+		await s.runWith(assistant(), 'add', 'in', '2m', 'cmd', 'task', 'ls');
+		const refuse = async (args: string[], re: RegExp) => {
+			const before = JSON.stringify(readJobs(s.dataDir));
+			await assert.rejects(s.runWith(assistant(), 'add', 'in', '1m', ...args), re);
+			assert.equal(JSON.stringify(readJobs(s.dataDir)), before);
+		};
+		await refuse(['cmd', 'task', 'new', 'x'], /"task new" needs the user's approval each time.*ask the user to add the job/);
+		await refuse(['cmd', 'claude', 'start', 'hi'], /ask the user to add the job/);
+		await refuse(['cmd', 'claude', 'auth', 'login'], /cannot be run by the scheduler/);
+		await refuse(['cmd', 'chat'], /cannot be run by the scheduler/);
+		await refuse(['cmd', 'scheduler', 'list'], /cannot run scheduler commands/);
+		await refuse(['cmd', 'nope'], /Unknown command "nope"/);
+		await refuse(['sh', 'echo', 'hi'], /cannot schedule shell scripts/);
+		assert.deepEqual(readJobs(s.dataDir).jobs.map(j => j.by), ['assistant', 'assistant']);
+	});
+
+	it('without a catalog only the user may add console lines', async () => {
+		for (const bridgeOf of [undefined, {...bridge, list: () => []}] as (CommandBridge | undefined)[]) {
+			const s = setup();
+			const ctx: Partial<CommandContext> = {headless: true, ...(bridgeOf && {commandBridge: bridgeOf})};
+			await s.runWith(ctx, 'add', 'in', '1m', 'cmd', 'task', 'new', 'x');
+			assert.equal(readJobs(s.dataDir).jobs[0]!.by, 'user');
+			await assert.rejects(s.runWith({...ctx, ...assistant()}, 'add', 'in', '1m', 'cmd', 'task', 'list'), /cannot check this line yet; ask the user to add the job/);
+			await assert.rejects(s.runWith(ctx, 'add', 'in', '1m', 'cmd', 'scheduler', 'list'), /cannot run scheduler commands/);
+			await assert.rejects(s.runWith({...ctx, ...assistant()}, 'add', 'in', '1m', 'cmd', 'scheduler', 'list'), /cannot run scheduler commands/);
+			assert.equal(readJobs(s.dataDir).jobs.length, 1);
+		}
+	});
+
+	it('list and show tell the jobs of an assistant and of before 0.3.0', async () => {
+		const s = setup();
+		await s.run();
+		await s.runWith(assistant(), 'add', 'in', '1m', 'cmd', 'task', 'list');
+		await s.run('add', 'in', '2m', 'cmd', 'task', 'list');
+		updateJobs(s.dataDir, state => void state.jobs.push({...state.jobs[1]!, id: 3, next: NOW + 180_000, by: 'legacy'}));
+		const list = (await s.run('list')).split('\n');
+		assert.match(list[0]!, /^#1 .* · by an assistant {2}cmd task list$/);
+		assert.doesNotMatch(list[1]!, /by an assistant|before 0\.3\.0/);
+		assert.match(list[2]!, /^#3 .* · from before 0\.3\.0 {2}cmd task list$/);
+		assert.match(await s.run('show', '1'), /added 2026-10-24 12:00.* by an assistant, ran 0 times/);
+		assert.match(await s.run('show', '3'), /added .* before 0\.3\.0 \(treated as an assistant's\), ran/);
+		assert.doesNotMatch(await s.run('show', '2'), /by an assistant|before 0\.3\.0/);
 	});
 
 	it('pauses, resumes, runs now, shows and removes', async () => {
