@@ -54,7 +54,7 @@ The origin is `user` unless `ctx.signal` is set, which only core's assistant bri
 - The user may add any non-`deny` line. Without a bridge, or with an empty catalog (agent commands off), the user's line is checked only for `scheduler` (run time enforces the rest) and an assistant's is refused.
 - Every refusal happens before anything is written.
 
-To start a chat with a message on a schedule, use the claude module's `claude start <message…>` (policy `confirm`): it opens a new chat in the main area and sends the message; the chat open before is saved and can be resumed.
+To start a chat with a message on a schedule, use the claude module's `claude start <message…>` (policy `confirm`): it opens a new chat in the main area and sends the message; the chat open before is saved and can be resumed. A scheduled chat runs only on an API key account (claude 0.21.0+): without one the job fails with the reason and no chat opens.
 
 ## Data
 
