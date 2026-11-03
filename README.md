@@ -54,7 +54,7 @@ The origin is `user` unless `ctx.signal` is set, which only core's assistant bri
 - The user may add any non-`deny` line. Without a bridge, or with an empty catalog (agent commands off), the user's line is checked only for `scheduler` (run time enforces the rest) and an assistant's is refused.
 - Every refusal happens before anything is written.
 
-To start a chat with a message on a schedule, use the claude module's `claude start <message…>` (policy `confirm`): it opens a new chat in the main area and sends the message; the chat open before is saved and can be resumed. A scheduled chat runs only on an API key account (claude 0.21.0+): without one the job fails with the reason and no chat opens.
+To start a chat with a message on a schedule, use the claude module's `claude start <message…>` (policy `confirm`): it opens a new chat in the main area and sends the message; the chat open before is saved and can be resumed. A scheduled chat runs only on an API key account (claude 0.21.0+): without one the job fails with the reason and no chat opens. Do not run Claude Code itself from an `sh` job on a subscription (e.g. `modules/claude/bin/claude -p …`): the credential variables are left out, but Claude Code still finds its own login in its config dir. Anthropic's Consumer Terms (§3) allow automated access only through an API key, so a scripted Claude Code run must use one (`ANTHROPIC_API_KEY` set in the script, read from your own secret store).
 
 ## Data
 
