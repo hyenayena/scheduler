@@ -3,12 +3,13 @@ import {existsSync, mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {after, describe, it} from 'node:test';
-import type {CommandBridge, CommandContext, CommandInfo} from '../../../src/api.js';
+import type {CommandBridge, CommandContext, CommandInfo, StyledBlock, StyledCell, StyledSpan} from '../../../src/api.js';
 import {createSchedulerCommand} from '../src/commands.js';
 import {noopLog} from '../src/log.js';
 import plugin from '../src/index.js';
 import type {Runner} from '../src/runner.js';
-import {readJobs, updateJobs} from '../src/store.js';
+import {formatTime} from '../src/schedule.js';
+import {appendRun, readJobs, updateJobs} from '../src/store.js';
 
 const root = mkdtempSync(path.join(tmpdir(), 'scheduler-cmd-'));
 after(() => rmSync(root, {recursive: true, force: true}));
@@ -169,12 +170,79 @@ describe('scheduler command', () => {
 		await s.run('add', 'in', '2m', 'cmd', 'task', 'list');
 		updateJobs(s.dataDir, state => void state.jobs.push({...state.jobs[1]!, id: 3, next: NOW + 180_000, by: 'legacy'}));
 		const list = (await s.run('list')).split('\n');
-		assert.match(list[0]!, /^#1 .* · by an assistant {2}cmd task list$/);
+		assert.match(list[0]!, /^#1 .* {2}by an assistant {2}cmd task list$/);
 		assert.doesNotMatch(list[1]!, /by an assistant|before 0\.3\.0/);
-		assert.match(list[2]!, /^#3 .* · from before 0\.3\.0 {2}cmd task list$/);
+		assert.match(list[2]!, /^#3 .* {2}from before 0\.3\.0 {2}cmd task list$/);
 		assert.match(await s.run('show', '1'), /added 2026-10-24 12:00.* by an assistant, ran 0 times/);
 		assert.match(await s.run('show', '3'), /added .* before 0\.3\.0 \(treated as an assistant's\), ran/);
 		assert.doesNotMatch(await s.run('show', '2'), /by an assistant|before 0\.3\.0/);
+	});
+
+	it('prints styled blocks: list a head-less table, log a table with a head, failed runs in the error tone', async () => {
+		const s = setup();
+		await s.run('add', '--name', 'backup', 'every', '1h', 'sh', 'tar', 'czf', 'x');
+		await s.run('add', 'in', '10m', 'cmd', 'task', 'list');
+		updateJobs(s.dataDir, state => {
+			state.jobs[0]!.lastStatus = 'error';
+			state.jobs[1]!.paused = true;
+		});
+		appendRun(s.dataDir, {id: 1, at: NOW, ms: 1200, status: 'error', note: 'exit 2', output: 'boom'});
+		appendRun(s.dataDir, {id: 2, at: NOW, ms: 100, status: 'refused'});
+		const blocks: StyledBlock[][] = [];
+		const ctx: CommandContext = {print: () => assert.fail('printed plain'), clear() {}, exit() {}, printStyled: b => void blocks.push([...b])};
+		const command = createSchedulerCommand({dataDir: s.dataDir, cwd: root, log: noopLog, now: () => NOW, runner: () => ({start() {}, stop() {}, tick: async () => {}, leader: true, running: new Set()})});
+		const parts = (cell: StyledCell | undefined): StyledSpan[] =>
+			(Array.isArray(cell) ? cell : [cell]).map((p: string | StyledSpan | undefined) => (typeof p === 'string' ? {text: p} : (p ?? {text: ''})));
+		const toneOf = (cell: StyledCell | undefined, text: string) => parts(cell).find(p => p.text === text)?.tone;
+
+		await command.run(['list'], ctx);
+		const list = blocks.pop()!;
+		assert.equal(list.length, 1);
+		const t = list[0]!;
+		assert.ok(t.kind === 'table');
+		assert.equal(t.head, undefined);
+		assert.equal(t.flex, 5);
+		const row = (id: string) => t.rows.find(r => parts(r[0])[0]!.text === id)!;
+		assert.equal(toneOf(row('#1')[0], '#1'), 'accent');
+		assert.equal(parts(row('#1')[0])[1]!.bold, true);
+		assert.equal(toneOf(row('#1')[1], 'every 1h'), 'muted');
+		assert.equal(toneOf(row('#1')[3], 'error'), 'error');
+		assert.equal(toneOf(row('#2')[2], 'paused'), 'warn');
+		assert.equal(row('#2')[3], '');
+
+		await command.run(['log'], ctx);
+		const log = blocks.pop()![0]!;
+		assert.ok(log.kind === 'table');
+		assert.deepEqual(log.head, ['When', 'Job', 'Status', 'Took']);
+		const failed = log.rows.find(r => parts(r[1])[0]!.text === '#1')!;
+		assert.equal(toneOf(failed[2], 'error'), 'error');
+		assert.equal(toneOf(failed[2], ' (exit 2)'), 'muted');
+		assert.equal(toneOf(failed[3], '1.2 s'), 'muted');
+		assert.equal(toneOf(log.rows.find(r => parts(r[1])[0]!.text === '#2')![2], 'refused'), 'warn');
+
+		await command.run(['show', '1'], ctx);
+		const show = blocks.pop()!;
+		assert.deepEqual(show.map(b => b.kind), ['line', 'line', 'line', 'line', 'text']);
+		const first = show[0]!;
+		assert.ok(first.kind === 'line');
+		assert.equal(toneOf(first.spans, 'error'), 'error');
+		const run = show[3]!;
+		assert.ok(run.kind === 'line');
+		assert.equal(toneOf(run.spans, 'error'), 'error');
+		assert.deepEqual(show[4], {kind: 'text', text: '    boom', tone: 'muted'});
+	});
+
+	it('the plain form of show and log keeps the line texts', async () => {
+		const s = setup();
+		await s.run('add', 'every', '1h', 'sh', 'echo', 'hi');
+		updateJobs(s.dataDir, state => void (state.jobs[0]!.lastStatus = 'timeout'));
+		appendRun(s.dataDir, {id: 1, at: NOW, ms: 1200, status: 'timeout', note: 'after 60 s', output: 'a\nb'});
+		const at = formatTime(NOW);
+		assert.equal(
+			await s.run('show', '1'),
+			[`#1  every 1h  next ${formatTime(NOW + 3_600_000)} · last timeout  sh echo hi`, '  script: echo hi', `  added ${at}, ran 0 times`, `  ${at} timeout (after 60 s)`, '    a', '    b'].join('\n'),
+		);
+		assert.equal(await s.run('log'), `${at}  #1  timeout (after 60 s)  1.2 s`);
 	});
 
 	it('pauses, resumes, runs now, shows and removes', async () => {

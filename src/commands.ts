@@ -1,8 +1,8 @@
-import type {Command, CommandBridge, CommandContext, Logger, Subcommand} from '../../../src/api.js';
+import type {Command, CommandBridge, CommandContext, Logger, SpanTone, StyledBlock, StyledCell, StyledSpan, Subcommand} from '../../../src/api.js';
 import {createRunner, redact, type Runner} from './runner.js';
-import {resolveCommandLine} from './deps/core.js';
+import {line, printStyled, resolveCommandLine, span, table, textBlock} from './deps/core.js';
 import {formatDuration, formatTime, parseSchedule} from './schedule.js';
-import {type Job, MAX_JOBS, MAX_LINE, MAX_SCRIPT, readJobs, readRuns, updateJobs} from './store.js';
+import {type Job, MAX_JOBS, MAX_LINE, MAX_SCRIPT, readJobs, readRuns, type RunStatus, updateJobs} from './store.js';
 
 export type SchedulerDeps = {
 	dataDir: string;
@@ -65,11 +65,41 @@ const oneLine = (text: string, max: number): string => {
 
 const actionText = (job: Job): string => (job.action.kind === 'cmd' ? `cmd ${job.action.line}` : `sh ${job.action.script}`);
 
-function jobLine(job: Job, running: boolean): string {
-	const state = job.paused ? 'paused' : running ? 'running' : `next ${formatTime(job.next)}`;
-	const last = job.lastStatus ? ` · last ${job.lastStatus}` : '';
-	const by = job.by === 'assistant' ? ' · by an assistant' : job.by === 'legacy' ? ' · from before 0.3.0' : '';
-	return `#${job.id}${job.name ? ` ${job.name}` : ''}  ${job.when}  ${state}${last}${by}  ${oneLine(actionText(job), 80)}`;
+const statusTone = (status: RunStatus): SpanTone => (status === 'ok' ? 'ok' : status === 'refused' ? 'warn' : 'error');
+
+const statusSpan = (status: RunStatus): StyledSpan => span(status, {tone: statusTone(status)});
+
+const idCell = (job: Job): StyledSpan[] => [span(`#${job.id}`, {tone: 'accent'}), ...(job.name ? [span(` ${job.name}`, {bold: true})] : [])];
+
+const stateSpan = (job: Job, running: boolean): StyledSpan | string =>
+	job.paused ? span('paused', {tone: 'warn'}) : running ? span('running', {tone: 'accent'}) : `next ${formatTime(job.next)}`;
+
+const byText = (job: Job): string => (job.by === 'assistant' ? 'by an assistant' : job.by === 'legacy' ? 'from before 0.3.0' : '');
+
+function jobCells(job: Job, running: boolean): StyledCell[] {
+	const by = byText(job);
+	return [
+		idCell(job),
+		span(job.when, {tone: 'muted'}),
+		stateSpan(job, running),
+		job.lastStatus ? ['last ', statusSpan(job.lastStatus)] : '',
+		by === '' ? '' : span(by, {tone: 'muted'}),
+		oneLine(actionText(job), 80),
+	];
+}
+
+function jobLine(job: Job, running: boolean): StyledBlock {
+	const by = byText(job);
+	return line(
+		...idCell(job),
+		'  ',
+		span(job.when, {tone: 'muted'}),
+		'  ',
+		stateSpan(job, running),
+		...(job.lastStatus ? [' · last ', statusSpan(job.lastStatus)] : []),
+		...(by === '' ? [] : [span(` · ${by}`, {tone: 'muted'})]),
+		`  ${oneLine(actionText(job), 80)}`,
+	);
 }
 
 const idArg = (raw: string | undefined, usage: string): number => {
@@ -136,7 +166,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 			ctx.print(`[scheduler] ${jobs.length} job${jobs.length === 1 ? '' : 's'}${first ? `; next #${first.id} at ${formatTime(first.next)}` : ''}`);
 			return;
 		}
-		for (const job of sorted) ctx.print(jobLine(job, runner?.running.has(job.id) ?? false));
+		printStyled(ctx, [table(sorted.map(job => jobCells(job, runner?.running.has(job.id) ?? false)), {flex: 5})]);
 	};
 
 	const add = (args: string[], ctx: CommandContext): void => {
@@ -199,15 +229,21 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 
 	const show = (id: number, ctx: CommandContext): void => {
 		const job = find(id);
-		ctx.print(jobLine(job, runner?.running.has(job.id) ?? false));
-		ctx.print(`  ${job.action.kind === 'cmd' ? 'console line' : 'script'}: ${job.action.kind === 'cmd' ? job.action.line : job.action.script}`);
+		const blocks: StyledBlock[] = [
+			jobLine(job, runner?.running.has(job.id) ?? false),
+			line(
+				span(`  ${job.action.kind === 'cmd' ? 'console line' : 'script'}: `, {tone: 'muted'}),
+				job.action.kind === 'cmd' ? job.action.line : job.action.script,
+			),
+		];
 		const by = job.by === 'assistant' ? ' by an assistant' : job.by === 'legacy' ? " before 0.3.0 (treated as an assistant's)" : '';
-		ctx.print(`  added ${formatTime(job.createdAt)}${by}, ran ${job.runs} time${job.runs === 1 ? '' : 's'}${job.lastRun ? `, last ${formatTime(job.lastRun)}` : ''}`);
+		blocks.push(line(span(`  added ${formatTime(job.createdAt)}${by}, ran ${job.runs} time${job.runs === 1 ? '' : 's'}${job.lastRun ? `, last ${formatTime(job.lastRun)}` : ''}`, {tone: 'muted'})));
 		const runs = readRuns(deps.dataDir, id, 3);
 		for (const r of runs) {
-			ctx.print(`  ${formatTime(r.at)} ${r.status}${r.note ? ` (${redact(deps.log, r.note)})` : ''}`);
-			if (r.output) ctx.print(redact(deps.log, r.output).trimEnd().split('\n').slice(-5).map(l => `    ${oneLine(l, 200)}`).join('\n'));
+			blocks.push(line(`  ${formatTime(r.at)} `, statusSpan(r.status), ...(r.note ? [` (${redact(deps.log, r.note)})`] : [])));
+			if (r.output) blocks.push(textBlock(redact(deps.log, r.output).trimEnd().split('\n').slice(-5).map(l => `    ${oneLine(l, 200)}`).join('\n'), 'muted'));
 		}
+		printStyled(ctx, blocks);
 	};
 
 	const log = (rawId: string | undefined, ctx: CommandContext): void => {
@@ -217,7 +253,13 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 			ctx.print('No runs yet.');
 			return;
 		}
-		for (const r of runs) ctx.print(`${formatTime(r.at)}  #${r.id}  ${r.status}${r.note ? ` (${oneLine(redact(deps.log, r.note), 120)})` : ''}  ${(r.ms / 1000).toFixed(1)} s`);
+		const rows = runs.map((r): StyledCell[] => [
+			span(formatTime(r.at), {tone: 'muted'}),
+			span(`#${r.id}`, {tone: 'accent'}),
+			[statusSpan(r.status), ...(r.note ? [span(` (${oneLine(redact(deps.log, r.note), 120)})`, {tone: 'muted'})] : [])],
+			span(`${(r.ms / 1000).toFixed(1)} s`, {tone: 'muted'}),
+		]);
+		printStyled(ctx, [table(rows, {head: ['When', 'Job', 'Status', 'Took']})]);
 	};
 
 	return {
