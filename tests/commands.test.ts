@@ -31,12 +31,11 @@ const commands: CommandInfo[] = [
 		description: '',
 		policy: 'deny',
 		subcommands: [
-			{name: 'start', aliases: [], usage: '', description: '', policy: 'confirm'},
 			{name: 'auth', aliases: [], usage: '', description: '', policy: 'confirm', subcommands: [{name: 'login', aliases: [], usage: '', description: '', policy: 'deny'}]},
 		],
 	},
 	{name: 'account', description: '', policy: 'safe', subcommands: [{name: 'grant', aliases: [], usage: '', description: '', policy: 'deny'}]},
-	{name: 'chat', description: '', policy: 'deny', subcommands: []},
+	{name: 'chat', description: '', policy: 'deny', subcommands: [{name: 'start', aliases: [], usage: '', description: '', policy: 'confirm'}]},
 ];
 const bridge: CommandBridge = {list: () => commands, run: async () => ({status: 'ok', output: '', truncated: false, ms: 1})};
 
@@ -88,12 +87,12 @@ describe('scheduler command', () => {
 		const s = setup();
 		assert.match(await s.run('add', 'every', '1h', 'cmd', 'task', 'list'), /^Scheduled #1: first run 2026-10-24 13:00.* \(then every 1h\)\.$/);
 		assert.match(await s.run('add', '--name', 'backup', 'in', '10m', 'sh', 'tar', 'czf', '/tmp/x.tgz', 'data'), /^Scheduled #2 backup: first run 2026-10-24 12:10/);
-		assert.match(await s.run('add', 'cron', '0', '9', '*', '*', 'mon-fri', 'cmd', 'claude', 'start', 'Morning', 'summary', 'please'), /^Scheduled #3: .* \(then by its cron schedule\)/);
+		assert.match(await s.run('add', 'cron', '0', '9', '*', '*', 'mon-fri', 'cmd', 'chat', 'start', 'Morning', 'summary', 'please'), /^Scheduled #3: .* \(then by its cron schedule\)/);
 		const {jobs} = readJobs(s.dataDir);
 		assert.deepEqual(jobs.map(j => j.action), [
 			{kind: 'cmd', line: 'task list'},
 			{kind: 'sh', script: 'tar czf /tmp/x.tgz data'},
-			{kind: 'cmd', line: 'claude start Morning summary please'},
+			{kind: 'cmd', line: 'chat start Morning summary please'},
 		]);
 		const list = (await s.run('list')).split('\n');
 		assert.match(list[0]!, /^#2 backup {2}in 10m {2}next 2026-10-24 12:10/);
@@ -120,11 +119,11 @@ describe('scheduler command', () => {
 		await assert.rejects(s.run('add', 'in', '1m', 'cmd', 'claude', 'auth', 'login'), /"claude auth login" cannot be run by the scheduler/);
 		await assert.rejects(s.run('add', 'in', '1m', 'cmd', 'account', 'grant', 'x'), /"account grant" cannot be run by the scheduler/);
 		assert.equal(readJobs(s.dataDir).jobs.length, 0);
-		await s.run('add', 'in', '1m', 'cmd', 'claude', 'start', 'hello');
+		await s.run('add', 'in', '1m', 'cmd', 'chat', 'start', 'hello');
 		await s.run('add', 'in', '1m', 'cmd', 'task', 'new', 'x');
 		await s.run('add', 'in', '1m', 'cmd', 'claude', 'auth');
 		assert.deepEqual(readJobs(s.dataDir).jobs.map(j => [j.action.kind === 'cmd' && j.action.line, j.by]), [
-			['claude start hello', 'user'],
+			['chat start hello', 'user'],
 			['task new x', 'user'],
 			['claude auth', 'user'],
 		]);
@@ -141,7 +140,7 @@ describe('scheduler command', () => {
 			assert.equal(JSON.stringify(readJobs(s.dataDir)), before);
 		};
 		await refuse(['cmd', 'task', 'new', 'x'], /"task new" needs the user's approval each time.*ask the user to add the job/);
-		await refuse(['cmd', 'claude', 'start', 'hi'], /ask the user to add the job/);
+		await refuse(['cmd', 'chat', 'start', 'hi'], /ask the user to add the job/);
 		await refuse(['cmd', 'claude', 'auth', 'login'], /cannot be run by the scheduler/);
 		await refuse(['cmd', 'chat'], /cannot be run by the scheduler/);
 		await refuse(['cmd', 'scheduler', 'list'], /cannot run scheduler commands/);
