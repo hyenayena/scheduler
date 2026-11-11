@@ -97,6 +97,14 @@ describe('scheduler command', () => {
 		const list = (await s.run('list')).split('\n');
 		assert.match(list[0]!, /^#2 backup {2}in 10m {2}next 2026-10-24 12:10/);
 		assert.match(list[1]!, /^#1 {2}every 1h/);
+		await s.run('add', 'in', '5m', 'cmd', 'task', 'new', 'two words', '--opt=a b');
+		await s.run('add', 'in', '5m', 'sh', 'echo', 'two words', "it's", '');
+		await s.run('add', 'in', '5m', 'sh', 'echo "a b"');
+		assert.deepEqual(readJobs(s.dataDir).jobs.slice(3).map(j => j.action), [
+			{kind: 'cmd', line: 'task new "two words" "--opt=a b"'},
+			{kind: 'sh', script: "echo 'two words' it's ''"},
+			{kind: 'sh', script: 'echo "a b"'},
+		]);
 	});
 
 	it('refuses lines the console would not run for an assistant, scheduler lines and bad input', async () => {
@@ -105,6 +113,7 @@ describe('scheduler command', () => {
 		await assert.rejects(s.run('add', 'in', '1m', 'cmd', 'chat'), /cannot be run by the scheduler/);
 		await assert.rejects(s.run('add', 'in', '1m', 'cmd', 'nope'), /Unknown command "nope"/);
 		await assert.rejects(s.run('add', 'in', '1m', 'cmd', 'scheduler', 'list'), /cannot run scheduler commands/);
+		await assert.rejects(s.run('add', 'in', '1m', 'cmd', '"scheduler"', 'list'), /Unknown command/);
 		await assert.rejects(s.run('add', 'in', '1m', 'ls'), /After the schedule comes "cmd/);
 		await assert.rejects(s.run('add', 'in', '1m', 'sh'), /After the schedule comes "cmd/);
 		await assert.rejects(s.run('add'), /Usage: scheduler add/);

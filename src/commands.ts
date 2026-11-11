@@ -1,6 +1,6 @@
 import type {Command, CommandBridge, CommandContext, Logger, SpanTone, StyledBlock, StyledCell, StyledSpan, Subcommand} from '../../../src/api.js';
 import {createRunner, redact, type Runner} from './runner.js';
-import {line, printStyled, resolveCommandLine, span, table, textBlock} from './deps/core.js';
+import {joinWords, line, printStyled, resolveCommandLine, span, splitWords, table, textBlock} from './deps/core.js';
 import {formatDuration, formatTime, parseSchedule} from './schedule.js';
 import {type Job, MAX_JOBS, MAX_LINE, MAX_SCRIPT, readJobs, readRuns, type RunStatus, updateJobs} from './store.js';
 
@@ -110,10 +110,15 @@ const idArg = (raw: string | undefined, usage: string): number => {
 
 type By = 'user' | 'assistant';
 
+function shellJoin(words: readonly string[]): string {
+	if (words.length === 1) return words[0]!;
+	return words.map(w => (w === '' || /\s/u.test(w) ? `'${w.replace(/'/g, "'\\''")}'` : w)).join(' ');
+}
+
 const NO_SCHEDULER = 'A job cannot run scheduler commands';
 
 function checkLine(line: string, bridge: CommandBridge | undefined, by: By): void {
-	const name = line.trim().split(/\s+/)[0] ?? '';
+	const name = splitWords(line).words[0]?.text ?? '';
 	if (name === 'scheduler') throw new Error(NO_SCHEDULER);
 	const list = bridge?.list() ?? [];
 	if (list.length === 0) {
@@ -181,7 +186,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		const t = now();
 		const parsed = parseSchedule(rest, t);
 		const [kind, ...body] = parsed.rest;
-		const text = body.join(' ').trim();
+		const text = (kind === 'sh' ? shellJoin(body) : joinWords(body)).trim();
 		if ((kind !== 'cmd' && kind !== 'sh') || text === '') throw new Error(`After the schedule comes "cmd <console line>" or "sh <script>". Usage: ${ADD_USAGE}`);
 		const by: By = ctx.signal !== undefined ? 'assistant' : 'user';
 		if (kind === 'cmd') {

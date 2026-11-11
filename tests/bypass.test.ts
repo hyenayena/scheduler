@@ -35,7 +35,7 @@ describe('scheduler policy bypass attempts', () => {
 			await assert.rejects(add(dataDir, catalog('safe'), who, 'add', 'in', '1m', 'cmd', ...line), re);
 			assert.equal(readJobs(dataDir).jobs.length, 0);
 		};
-		await refuse(/cannot run scheduler commands/, {}, '\tscheduler\tadd');
+		await refuse(/Unknown command/, {}, '\tscheduler\tadd');
 		await refuse(/cannot run scheduler commands/, assistant(), 'scheduler', 'a', 'in', '1m');
 		await refuse(/"account grant" cannot be run/, {}, 'account', 'g', 'x');
 		await refuse(/"account grant" cannot be run/, assistant(), 'account', 'g', 'x');

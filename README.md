@@ -26,7 +26,7 @@ Runs yena console lines and shell scripts later or repeatedly, so a user or an a
 
 Times are the container's local time (`TZ`; UTC unless the container sets it) and are shown with the zone.
 
-The console splits a line on whitespace, so a job's line or script is its words joined by single spaces (no quoting); put a script that needs exact whitespace in a file and schedule `sh sh /path/to/script.sh`.
+The console reads quotes (core's line words, see core's README "Console lines: words and quotes"). A `cmd` job is stored with its words re-quoted (`joinWords`), so quoted arguments keep their spaces. A `sh` job is shell text: one word is used verbatim, so quote the whole script (`sh "echo 'a b' | wc -l"`); several words are joined with spaces and a word holding whitespace or an empty one is single-quoted. Put a script that needs exact whitespace in a file and schedule `sh sh /path/to/script.sh`.
 
 Examples:
 ```
