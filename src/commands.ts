@@ -1,6 +1,6 @@
-import type {Command, CommandBridge, CommandContext, Logger, SpanTone, StyledBlock, StyledCell, StyledSpan, Subcommand} from '../../../src/api.js';
+import type {Command, CommandBridge, CommandContext, EventBus, Logger, SpanTone, StyledBlock, StyledCell, StyledSpan, Subcommand} from '../../../src/api.js';
 import {createRunner, redact, type Runner} from './runner.js';
-import {joinWords, line, printStyled, resolveCommandLine, span, splitWords, table, textBlock} from './deps/core.js';
+import {joinWords, line, printStyled, reportActivity, resolveCommandLine, span, splitWords, table, textBlock} from './deps/core.js';
 import {formatDuration, formatTime, parseSchedule} from './schedule.js';
 import {type Job, MAX_JOBS, MAX_LINE, MAX_SCRIPT, readJobs, readRuns, type RunStatus, updateJobs} from './store.js';
 
@@ -9,6 +9,7 @@ export type SchedulerDeps = {
 	cwd: string;
 	log: Logger;
 	now?: () => number;
+	events?: EventBus;
 	runner?: (deps: Parameters<typeof createRunner>[0]) => Runner;
 };
 
@@ -152,6 +153,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 			log: deps.log,
 			bridge: () => bridge,
 			notify: text => notify(text),
+			activity: r => reportActivity(deps.events, r),
 			...(deps.now && {now: deps.now}),
 		});
 		runner.start();

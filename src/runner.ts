@@ -2,6 +2,7 @@ import {spawn} from 'node:child_process';
 import {mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 import type {CommandBridge, Logger} from '../../../src/api.js';
+import {type ActivityReport} from './deps/core.js';
 import {scriptEnv} from './env.js';
 import {nextRun} from './schedule.js';
 import {appendRun, type Job, readJobs, type RunStatus, updateJobs} from './store.js';
@@ -110,6 +111,7 @@ export type RunnerDeps = {
 	now?: () => number;
 	runSh?: RunSh;
 	tickMs?: number;
+	activity?: (report: ActivityReport) => void;
 };
 
 export type Runner = {start(): void; stop(): void; tick(): Promise<void>; readonly leader: boolean; readonly running: ReadonlySet<number>};
@@ -118,6 +120,8 @@ export const redact = (log: Logger, text: string): string => log.redact?.(text) 
 
 const label = (job: Job) => `#${job.id}${job.name ? ` ${job.name}` : ''}`;
 
+const activityOf = (job: Job, state: ActivityReport['state']): ActivityReport => ({source: 'scheduler', id: `job-${job.id}`, label: `job ${label(job)}`, state});
+
 export function createRunner(deps: RunnerDeps): Runner {
 	const now = deps.now ?? Date.now;
 	const sh = deps.runSh ?? runSh;
@@ -125,6 +129,12 @@ export function createRunner(deps: RunnerDeps): Runner {
 	const running = new Set<number>();
 	let timer: NodeJS.Timeout | undefined;
 	let ticking = false;
+
+	const report = (job: Job, state: ActivityReport['state']): void => {
+		try {
+			deps.activity?.(activityOf(job, state));
+		} catch {}
+	};
 
 	const settle = (job: Job, at: number, ms: number, status: RunStatus, rawNote: string | undefined, rawOutput: string | undefined, pause?: boolean) => {
 		const note = rawNote === undefined ? undefined : redact(deps.log, rawNote);
@@ -149,6 +159,7 @@ export function createRunner(deps: RunnerDeps): Runner {
 		});
 		const text = `[scheduler] ${label(job)} (${job.action.kind}): ${status}${note ? ` — ${note}` : ''} in ${(ms / 1000).toFixed(1)} s${ended ? '; done' : ''}${paused ? '; paused' : ''}`;
 		deps.notify(text);
+		report(job, status === 'ok' ? 'ok' : 'failed');
 		deps.log.info('job ran', {kind: job.action.kind, status, ms, ended, by: job.by});
 	};
 
@@ -165,6 +176,7 @@ export function createRunner(deps: RunnerDeps): Runner {
 				settle(job, at, 0, 'refused', 'only the user can schedule scripts; add it again yourself', undefined, true);
 				return;
 			}
+			report(job, 'running');
 			const r = await sh(job.action.script, {cwd: deps.cwd, timeoutMs: SH_TIMEOUT_MS});
 			const status: RunStatus = r.timedOut ? 'timeout' : r.code === 0 ? 'ok' : 'error';
 			settle(job, at, now() - at, status, status === 'error' ? `exit ${r.code ?? 'signal'}` : undefined, r.output);
@@ -174,9 +186,11 @@ export function createRunner(deps: RunnerDeps): Runner {
 		if (!bridge) {
 			return;
 		}
+		report(job, 'running');
 		const r = await bridge.run({line: job.action.line, caller: 'scheduler', ...(job.by === 'user' && {confirm: async () => true}), timeoutMs: CMD_TIMEOUT_MS});
 		if (r.status === 'busy') {
 			delay(job, BUSY_RETRY_MS);
+			report(job, 'gone');
 			deps.log.debug('job delayed', {reason: 'busy'});
 			return;
 		}

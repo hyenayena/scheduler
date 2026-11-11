@@ -67,11 +67,11 @@ Migration: a stored job without a valid `by` (every job from before 0.3.0) is re
 
 ## Events
 
-None.
+None on the bus of its own. The jobs report their activity (`running` when they start, `ok` or `failed` when they settle, `gone` when a busy command is delayed) to the host topic `yena.activity` through core's `reportActivity`, so the console panel's activity row shows the running jobs (the label is `job #<id>` with the name, never the line or script).
 
 ## Dependencies
 
-`core`, statically, only through `src/deps/core.ts` (re-exports `resolveCommandLine` from core's kit `text.ts`). Console lines need core's command bridge (`ctx.commandBridge`, core 0.4.0+); without it only `sh` jobs run.
+`core`, statically, only through `src/deps/core.ts` (re-exports `resolveCommandLine`, `reportActivity` and the `ActivityReport` type from core's kit `text.ts`; `reportActivity` needs core 0.22.2). Console lines need core's command bridge (`ctx.commandBridge`, core 0.4.0+); without it only `sh` jobs run.
 
 ## From the host terminal
 

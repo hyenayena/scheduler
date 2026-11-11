@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {after, describe, it} from 'node:test';
 import type {CommandBridge, CommandRunRequest, CommandRunResult} from '../../../src/api.js';
+import type {ActivityReport} from '../src/deps/core.js';
 import {noopLog} from '../src/log.js';
 import {createLeaderLock, createRunner, runSh, type RunSh} from '../src/runner.js';
 import {type Job, readJobs, readRuns, updateJobs} from '../src/store.js';
@@ -167,5 +168,30 @@ describe('runner', () => {
 		const aside = readdirSync(dataDir).find(f => f.startsWith('jobs.json.broken-'));
 		assert.ok(aside);
 		assert.equal(readFileSync(path.join(dataDir, aside), 'utf8'), '{broken');
+	});
+
+	it('reports activity per job without the line or script, and a busy delay as gone', async () => {
+		const dataDir = dir();
+		put(dataDir, [
+			job({id: 1, name: 'nightly', action: {kind: 'cmd', line: 'secret line'}, schedule: {kind: 'once', at: 1}, next: 1}),
+			job({id: 2, action: {kind: 'sh', script: 'secret script'}, schedule: {kind: 'once', at: 1}, next: 1}),
+			job({id: 3, action: {kind: 'sh', script: 'false'}, schedule: {kind: 'once', at: 1}, next: 1}),
+			job({id: 4, action: {kind: 'cmd', line: 'busy line'}, schedule: {kind: 'every', everyMs: 60_000, anchor: 0}, next: 1}),
+		]);
+		const reports: ActivityReport[] = [];
+		const sh: RunSh = async script => ({code: script === 'false' ? 1 : 0, output: '', timedOut: false});
+		const {bridge} = fakeBridge(req => (req.line === 'busy line' ? {status: 'busy'} : {}));
+		const r = createRunner({dataDir, cwd: '/', log: noopLog, bridge: () => bridge, notify: () => {}, now: () => 1_000_000, runSh: sh, activity: x => void reports.push(x)});
+		await r.tick();
+		await new Promise(resolve => setTimeout(resolve, 50));
+		const of = (id: string) => reports.filter(x => x.id === id).map(x => x.state);
+		assert.deepEqual(of('job-1'), ['running', 'ok']);
+		assert.deepEqual(of('job-2'), ['running', 'ok']);
+		assert.deepEqual(of('job-3'), ['running', 'failed']);
+		assert.deepEqual(of('job-4'), ['running', 'gone']);
+		assert.equal(reports.find(x => x.id === 'job-1')?.label, 'job #1 nightly');
+		assert.ok(reports.every(x => x.source === 'scheduler' && !/secret|busy line/.test(x.label)));
+		const quiet = createRunner({dataDir: dir(), cwd: '/', log: noopLog, bridge: () => bridge, notify: () => {}});
+		await quiet.tick();
 	});
 });

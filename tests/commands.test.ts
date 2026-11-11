@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {after, describe, it} from 'node:test';
 import type {CommandBridge, CommandContext, CommandInfo, StyledBlock, StyledCell, StyledSpan} from '../../../src/api.js';
+import type {EventBus} from '../../../src/api.js';
 import {createSchedulerCommand} from '../src/commands.js';
 import {noopLog} from '../src/log.js';
 import plugin from '../src/index.js';
@@ -291,5 +292,28 @@ describe('scheduler command', () => {
 		const list = await plugin({dataDir, events: {emit() {}, on: () => () => {}}, log: undefined as never});
 		assert.deepEqual(list.map(c => c.name), ['scheduler']);
 		assert.ok(!existsSync(dataDir));
+	});
+});
+
+describe('activity wiring', () => {
+	it('the runner reports through the event bus', async () => {
+		const sent: {topic: string; payload: unknown}[] = [];
+		const events: EventBus = {emit: (topic, payload) => void sent.push({topic, payload}), on: () => () => {}};
+		let activity: ((r: {source: string; id: string; label: string; state: 'running'}) => void) | undefined;
+		const command = createSchedulerCommand({
+			dataDir: path.join(root, `d${n++}`),
+			cwd: root,
+			log: noopLog,
+			events,
+			runner: deps => {
+				activity = deps.activity;
+				return {start() {}, stop() {}, tick: async () => {}, leader: true, running: new Set()};
+			},
+		});
+		await command.run(['list'], {print() {}, clear() {}, exit() {}, commandBridge: bridge});
+		assert.ok(activity);
+		activity({source: 'scheduler', id: 'job-1', label: 'job #1', state: 'running'});
+		assert.equal(sent.length, 1);
+		assert.equal((sent[0]!.payload as {id: string}).id, 'job-1');
 	});
 });
