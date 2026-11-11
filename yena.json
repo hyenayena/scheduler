@@ -1,10 +1,13 @@
 {
 	"name": "scheduler",
-	"version": "0.4.0",
+	"version": "0.4.1",
 	"description": "Runs yena actions on a schedule",
 	"runtime": "node",
 	"entry": "src/index.ts",
 	"dependencies": {
-		"core": "core"
+		"core": {
+			"source": "core",
+			"version": "^0.22.0"
+		}
 	}
 }
