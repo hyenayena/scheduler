@@ -58,6 +58,8 @@ To start a chat with a message on a schedule, use the chat module's `chat start 
 
 ## Data
 
+Export (`yena.json` `export.deny`): `runner.lock` (a process lock); `jobs.json` and `runs.jsonl` are exported.
+
 Under `<YENA_DATA>/scheduler` (0600 files, 0700 dir):
 - `jobs.json`: `{v: 1, nextId, jobs: [{id, name?, by: user|assistant|legacy, schedule, when, action: {kind: 'cmd', line} | {kind: 'sh', script}, next, paused?, createdAt, runs, lastRun?, lastStatus?}]}`; schedules are `{kind: 'once', at}`, `{kind: 'every', everyMs, anchor}` or `{kind: 'cron', expr}`, times in epoch ms. Written atomically; a file that cannot be read is moved aside to `jobs.json.broken-<time>`.
 - `runs.jsonl`: one line per run `{id, at, ms, status: ok|error|timeout|refused, note?, output?}`, the latest 300 kept.

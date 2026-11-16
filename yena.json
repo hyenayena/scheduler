@@ -1,9 +1,10 @@
 {
 	"name": "scheduler",
-	"version": "0.6.0",
+	"version": "0.6.1",
 	"description": "Runs yena actions on a schedule",
 	"runtime": "node",
 	"entry": "src/index.ts",
+	"export": {"deny": ["runner.lock"]},
 	"dependencies": {
 		"core": {
 			"source": "core",
