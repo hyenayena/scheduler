@@ -1,3 +1,6 @@
 # Rules for the assistant in this repository (format: /data/md/architecture/claude/rules-files.md). Only the user edits this file.
 [ask write]
 /src/env.ts
+
+[deny export]
+@runner.lock
