@@ -2,9 +2,9 @@ import {spawn} from 'node:child_process';
 import {mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 import type {CommandBridge, Logger} from '../../../src/api.js';
-import {type ActivityReport} from './deps/core.js';
+import {currentTimeZone, systemTimeZone, type ActivityReport} from './deps/core.js';
 import {scriptEnv} from './env.js';
-import {nextRun} from './schedule.js';
+import {nextRun, rezoneJobs} from './schedule.js';
 import {appendRun, type Job, readJobs, type RunStatus, updateJobs} from './store.js';
 
 export const TICK_MS = 15_000;
@@ -109,6 +109,7 @@ export type RunnerDeps = {
 	bridge: () => CommandBridge | undefined;
 	notify: (text: string) => void;
 	now?: () => number;
+	zone?: () => string;
 	runSh?: RunSh;
 	tickMs?: number;
 	activity?: (report: ActivityReport) => void;
@@ -124,6 +125,7 @@ const activityOf = (job: Job, state: ActivityReport['state']): ActivityReport =>
 
 export function createRunner(deps: RunnerDeps): Runner {
 	const now = deps.now ?? Date.now;
+	const zoneNow = deps.zone ?? currentTimeZone;
 	const sh = deps.runSh ?? runSh;
 	const lock = createLeaderLock(deps.dataDir);
 	const running = new Set<number>();
@@ -145,7 +147,7 @@ export function createRunner(deps: RunnerDeps): Runner {
 		updateJobs(deps.dataDir, state => {
 			const current = state.jobs.find(j => j.id === job.id);
 			if (!current) return;
-			const next = nextRun(current.schedule, Math.max(now(), at));
+			const next = nextRun(current.schedule, Math.max(now(), at), zoneNow());
 			if (next === undefined) {
 				state.jobs = state.jobs.filter(j => j.id !== job.id);
 				ended = true;
@@ -204,6 +206,11 @@ export function createRunner(deps: RunnerDeps): Runner {
 		try {
 			if (!lock.acquire()) return;
 			const t = now();
+			const zone = zoneNow();
+			if (zone !== (readJobs(deps.dataDir).zone ?? systemTimeZone())) {
+				const count = updateJobs(deps.dataDir, state => rezoneJobs(state, zone, t));
+				deps.log.info('jobs rezoned', {count});
+			}
 			const due = readJobs(deps.dataDir).jobs.filter(j => !j.paused && j.next <= t && !running.has(j.id));
 			for (const job of due) {
 				running.add(job.id);

@@ -1,3 +1,6 @@
+import {currentTimeZone, systemTimeZone, zonedParts, zonedTime} from './deps/core.js';
+import type {Job} from './store.js';
+
 export type Schedule =
 	| {kind: 'once'; at: number}
 	| {kind: 'every'; everyMs: number; anchor: number}
@@ -29,25 +32,33 @@ export function formatDuration(ms: number): string {
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
-export function parseAt(text: string | undefined, now: number): number {
+function wallTime(text: string, y: number, mo: number, d: number, h: number, mi: number, sec: number, zone: string): number {
+	const ms = zonedTime({year: y, month: mo, day: d, hour: h, minute: mi, second: sec}, zone);
+	if (ms === undefined) throw new Error(`Invalid time "${text}"`);
+	return ms;
+}
+
+export function parseAt(text: string | undefined, now: number, zone: string = currentTimeZone()): number {
 	if (text === undefined) throw new Error('Give a time: 2026-10-25T09:00, 2026-10-25 or 09:00');
 	const clock = /^(\d{1,2}):(\d{2})$/.exec(text);
 	if (clock) {
 		const [h, m] = [Number(clock[1]), Number(clock[2])];
 		if (h > 23 || m > 59) throw new Error(`Invalid time "${text}"`);
-		const d = new Date(now);
-		d.setHours(h, m, 0, 0);
-		if (d.getTime() <= now) d.setDate(d.getDate() + 1);
-		return d.getTime();
+		const p = zonedParts(now, zone);
+		const today = wallTime(text, p.year, p.month, p.day, h, m, 0, zone);
+		if (today > now) return today;
+		const next = new Date(Date.UTC(p.year, p.month - 1, p.day + 1));
+		return wallTime(text, next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), h, m, 0, zone);
 	}
 	const date = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:\d{2})?)?$/.exec(text);
 	if (!date) throw new Error(`Invalid time "${text}"; use 2026-10-25T09:00, 2026-10-25 or 09:00`);
-	const [, y, mo, da, h = '00', mi = '00', s = '00', zone] = date;
-	const local = `${y}-${mo}-${da}T${h}:${mi}:${s}`;
-	const ms = zone ? Date.parse(`${local}${zone}`) : new Date(Number(y), Number(mo) - 1, Number(da), Number(h), Number(mi), Number(s)).getTime();
-	const check = new Date(ms);
-	if (!Number.isFinite(ms) || (!zone && (check.getMonth() !== Number(mo) - 1 || check.getDate() !== Number(da)))) throw new Error(`Invalid time "${text}"`);
-	return ms;
+	const [, y, mo, da, h = '00', mi = '00', sec = '00', offset] = date;
+	if (offset) {
+		const ms = Date.parse(`${y}-${mo}-${da}T${h}:${mi}:${sec}${offset}`);
+		if (!Number.isFinite(ms)) throw new Error(`Invalid time "${text}"`);
+		return ms;
+	}
+	return wallTime(text, Number(y), Number(mo), Number(da), Number(h), Number(mi), Number(sec), zone);
 }
 
 type Field = {set: Set<number>; star: boolean};
@@ -96,8 +107,8 @@ export function parseCron(expr: string): Cron {
 }
 
 function dayMatches(c: Cron, d: Date): boolean {
-	const dom = c.dom.set.has(d.getDate());
-	const dow = c.dow.set.has(d.getDay());
+	const dom = c.dom.set.has(d.getUTCDate());
+	const dow = c.dow.set.has(d.getUTCDay());
 	if (c.dom.star && c.dow.star) return true;
 	if (c.dom.star) return dow;
 	if (c.dow.star) return dom;
@@ -106,30 +117,35 @@ function dayMatches(c: Cron, d: Date): boolean {
 
 const HORIZON_MS = 5 * 366 * UNIT_MS.d!;
 
-export function nextCron(c: Cron, after: number): number | undefined {
-	const d = new Date(after);
-	d.setSeconds(0, 0);
-	d.setMinutes(d.getMinutes() + 1);
-	const end = after + HORIZON_MS;
+// The walk runs on the zone's wall clock kept in a UTC Date; each candidate is then mapped back to an instant.
+export function nextCron(c: Cron, after: number, zone: string = currentTimeZone()): number | undefined {
+	const p = zonedParts(after, zone);
+	const d = new Date(Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute + 1, 0));
+	const end = d.getTime() + HORIZON_MS;
 	for (let i = 0; i < 100_000 && d.getTime() <= end; i++) {
-		if (!c.month.set.has(d.getMonth() + 1)) {
-			d.setMonth(d.getMonth() + 1, 1);
-			d.setHours(0, 0, 0, 0);
+		if (!c.month.set.has(d.getUTCMonth() + 1)) {
+			d.setUTCMonth(d.getUTCMonth() + 1, 1);
+			d.setUTCHours(0, 0, 0, 0);
 		} else if (!dayMatches(c, d)) {
-			d.setDate(d.getDate() + 1);
-			d.setHours(0, 0, 0, 0);
-		} else if (!c.hour.set.has(d.getHours())) {
-			d.setHours(d.getHours() + 1, 0, 0, 0);
-		} else if (!c.minute.set.has(d.getMinutes())) {
-			d.setMinutes(d.getMinutes() + 1, 0, 0);
+			d.setUTCDate(d.getUTCDate() + 1);
+			d.setUTCHours(0, 0, 0, 0);
+		} else if (!c.hour.set.has(d.getUTCHours())) {
+			d.setUTCHours(d.getUTCHours() + 1, 0, 0, 0);
+		} else if (!c.minute.set.has(d.getUTCMinutes())) {
+			d.setUTCMinutes(d.getUTCMinutes() + 1, 0, 0);
 		} else {
-			return d.getTime();
+			const at = zonedTime(
+				{year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), hour: d.getUTCHours(), minute: d.getUTCMinutes()},
+				zone,
+			);
+			if (at !== undefined && at > after) return at;
+			d.setUTCMinutes(d.getUTCMinutes() + 1, 0, 0);
 		}
 	}
 	return undefined;
 }
 
-export function nextRun(s: Schedule, after: number): number | undefined {
+export function nextRun(s: Schedule, after: number, zone: string = currentTimeZone()): number | undefined {
 	switch (s.kind) {
 		case 'once':
 			return s.at > after ? s.at : undefined;
@@ -139,11 +155,11 @@ export function nextRun(s: Schedule, after: number): number | undefined {
 			return s.anchor + k * s.everyMs;
 		}
 		case 'cron':
-			return nextCron(parseCron(s.expr), after);
+			return nextCron(parseCron(s.expr), after, zone);
 	}
 }
 
-export function parseSchedule(args: string[], now: number): {schedule: Schedule; text: string; first: number; rest: string[]} {
+export function parseSchedule(args: string[], now: number, zone: string = currentTimeZone()): {schedule: Schedule; text: string; first: number; rest: string[]} {
 	const [word, ...after] = args;
 	let schedule: Schedule;
 	let used: number;
@@ -153,7 +169,7 @@ export function parseSchedule(args: string[], now: number): {schedule: Schedule;
 			used = 2;
 			break;
 		case 'at':
-			schedule = {kind: 'once', at: parseAt(after[0], now)};
+			schedule = {kind: 'once', at: parseAt(after[0], now, zone)};
 			used = 2;
 			break;
 		case 'every': {
@@ -179,14 +195,29 @@ export function parseSchedule(args: string[], now: number): {schedule: Schedule;
 		default:
 			throw new Error('The schedule is one of: in <duration>, at <time>, every <duration>, daily <HH:MM>, cron <m> <h> <dom> <mon> <dow>');
 	}
-	const first = schedule.kind === 'once' ? schedule.at : nextRun(schedule, now);
+	const first = schedule.kind === 'once' ? schedule.at : nextRun(schedule, now, zone);
 	if (first === undefined) throw new Error('That schedule never runs');
 	if (schedule.kind === 'once' && first <= now) throw new Error('That time has already passed');
 	return {schedule, text: args.slice(0, used).join(' '), first, rest: args.slice(used)};
 }
 
-export function formatTime(ms: number): string {
-	const d = new Date(ms);
-	const zone = new Intl.DateTimeFormat('en-GB', {timeZoneName: 'short'}).formatToParts(d).find(p => p.type === 'timeZoneName')?.value ?? '';
-	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}${zone ? ` ${zone}` : ''}`;
+export function formatTime(ms: number, zone: string = currentTimeZone()): string {
+	const p = zonedParts(ms, zone);
+	const name = new Intl.DateTimeFormat('en-GB', {timeZone: zone, timeZoneName: 'short'}).formatToParts(ms).find(part => part.type === 'timeZoneName')?.value ?? '';
+	return `${p.year}-${pad(p.month)}-${pad(p.day)} ${pad(p.hour)}:${pad(p.minute)}${name ? ` ${name}` : ''}`;
+}
+
+// Jobs were computed in the zone recorded in the file (the process zone before any was recorded); a changed zone moves only the cron jobs still ahead.
+export function rezoneJobs(state: {zone?: string; jobs: Job[]}, zone: string, now: number): number {
+	const from = state.zone ?? systemTimeZone();
+	let count = 0;
+	if (from !== zone) {
+		for (const job of state.jobs) {
+			if (job.schedule.kind !== 'cron' || job.next <= now) continue;
+			job.next = nextRun(job.schedule, now, zone) ?? job.next;
+			count++;
+		}
+	}
+	state.zone = zone;
+	return count;
 }

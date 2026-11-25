@@ -32,3 +32,18 @@ describe('store', () => {
 		assert.equal(again[2]!.lastStatus, 'refused');
 	});
 });
+
+describe('store zone', () => {
+	it('round-trips a valid zone and drops an invalid one', () => {
+		const dataDir = path.join(root, 'zone');
+		mkdirSync(dataDir, {recursive: true});
+		updateJobs(dataDir, s => {
+			s.zone = 'Europe/Kyiv';
+		});
+		assert.equal(readJobs(dataDir).zone, 'Europe/Kyiv');
+		for (const bad of ['"Bogus/Zone"', '5', 'null']) {
+			writeFileSync(path.join(dataDir, 'jobs.json'), `{"v":1,"nextId":1,"jobs":[],"zone":${bad}}`);
+			assert.equal('zone' in readJobs(dataDir), false, bad);
+		}
+	});
+});

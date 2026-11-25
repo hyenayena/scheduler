@@ -1,7 +1,7 @@
 import type {Command, CommandBridge, CommandContext, EventBus, Logger, SpanTone, StyledBlock, StyledCell, StyledSpan, Subcommand} from '../../../src/api.js';
 import {createRunner, redact, type Runner} from './runner.js';
-import {joinWords, line, printStyled, reportActivity, resolveCommandLine, span, splitWords, table, textBlock} from './deps/core.js';
-import {formatDuration, formatTime, parseSchedule} from './schedule.js';
+import {currentTimeZone, joinWords, line, printStyled, reportActivity, resolveCommandLine, span, splitWords, table, textBlock} from './deps/core.js';
+import {formatDuration, formatTime, parseSchedule, rezoneJobs} from './schedule.js';
 import {type Job, MAX_JOBS, MAX_LINE, MAX_SCRIPT, readJobs, readRuns, type RunStatus, updateJobs} from './store.js';
 
 export type SchedulerDeps = {
@@ -9,6 +9,7 @@ export type SchedulerDeps = {
 	cwd: string;
 	log: Logger;
 	now?: () => number;
+	zone?: () => string;
 	events?: EventBus;
 	runner?: (deps: Parameters<typeof createRunner>[0]) => Runner;
 };
@@ -34,7 +35,7 @@ const subcommands: Subcommand[] = [
 		options: [{name: '--name', value: '<name>', description: 'A name for the job (letters, digits, . _ -)'}],
 		notes: [
 			`When: ${WHEN}`,
-			'Durations: 90s, 10m, 1h30m, 2d, 1w; times: 2026-10-25T09:00, 2026-10-25, 09:00 (container time zone)',
+			'Durations: 90s, 10m, 1h30m, 2d, 1w; times: 2026-10-25T09:00, 2026-10-25, 09:00 (the time zone in settings, Time tab)',
 			'cmd runs a yena console line; the user may schedule any line except those not available to assistants',
 			'An assistant may schedule only lines it may run without asking, and no scripts',
 			'A job added by an assistant (or before 0.3.0) runs only what assistants may run without asking at run time',
@@ -72,31 +73,31 @@ const statusSpan = (status: RunStatus): StyledSpan => span(status, {tone: status
 
 const idCell = (job: Job): StyledSpan[] => [span(`#${job.id}`, {tone: 'accent'}), ...(job.name ? [span(` ${job.name}`, {bold: true})] : [])];
 
-const stateSpan = (job: Job, running: boolean): StyledSpan | string =>
-	job.paused ? span('paused', {tone: 'warn'}) : running ? span('running', {tone: 'accent'}) : `next ${formatTime(job.next)}`;
+const stateSpan = (job: Job, running: boolean, zone: string): StyledSpan | string =>
+	job.paused ? span('paused', {tone: 'warn'}) : running ? span('running', {tone: 'accent'}) : `next ${formatTime(job.next, zone)}`;
 
 const byText = (job: Job): string => (job.by === 'assistant' ? 'by an assistant' : job.by === 'legacy' ? 'from before 0.3.0' : '');
 
-function jobCells(job: Job, running: boolean): StyledCell[] {
+function jobCells(job: Job, running: boolean, zone: string): StyledCell[] {
 	const by = byText(job);
 	return [
 		idCell(job),
 		span(job.when, {tone: 'muted'}),
-		stateSpan(job, running),
+		stateSpan(job, running, zone),
 		job.lastStatus ? ['last ', statusSpan(job.lastStatus)] : '',
 		by === '' ? '' : span(by, {tone: 'muted'}),
 		oneLine(actionText(job), 80),
 	];
 }
 
-function jobLine(job: Job, running: boolean): StyledBlock {
+function jobLine(job: Job, running: boolean, zone: string): StyledBlock {
 	const by = byText(job);
 	return line(
 		...idCell(job),
 		'  ',
 		span(job.when, {tone: 'muted'}),
 		'  ',
-		stateSpan(job, running),
+		stateSpan(job, running, zone),
 		...(job.lastStatus ? [' · last ', statusSpan(job.lastStatus)] : []),
 		...(by === '' ? [] : [span(` · ${by}`, {tone: 'muted'})]),
 		`  ${oneLine(actionText(job), 80)}`,
@@ -138,6 +139,7 @@ function checkLine(line: string, bridge: CommandBridge | undefined, by: By): voi
 
 export function createSchedulerCommand(deps: SchedulerDeps): Command {
 	const now = deps.now ?? Date.now;
+	const zoneNow = deps.zone ?? currentTimeZone;
 	let bridge: CommandBridge | undefined;
 	let notify: (text: string) => void = () => {};
 	let runner: Runner | undefined;
@@ -155,6 +157,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 			notify: text => notify(text),
 			activity: r => reportActivity(deps.events, r),
 			...(deps.now && {now: deps.now}),
+			...(deps.zone && {zone: deps.zone}),
 		});
 		runner.start();
 		deps.log.info('scheduler started');
@@ -170,10 +173,10 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		const sorted = [...jobs].sort((a, b) => a.next - b.next);
 		if (quietWhenEmpty) {
 			const first = sorted.find(j => !j.paused);
-			ctx.print(`[scheduler] ${jobs.length} job${jobs.length === 1 ? '' : 's'}${first ? `; next #${first.id} at ${formatTime(first.next)}` : ''}`);
+			ctx.print(`[scheduler] ${jobs.length} job${jobs.length === 1 ? '' : 's'}${first ? `; next #${first.id} at ${formatTime(first.next, zoneNow())}` : ''}`);
 			return;
 		}
-		printStyled(ctx, [table(sorted.map(job => jobCells(job, runner?.running.has(job.id) ?? false)), {flex: 5})]);
+		printStyled(ctx, [table(sorted.map(job => jobCells(job, runner?.running.has(job.id) ?? false, zoneNow())), {flex: 5})]);
 	};
 
 	const add = (args: string[], ctx: CommandContext): void => {
@@ -186,7 +189,8 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		}
 		if (rest.length === 0) throw new Error(`Usage: ${ADD_USAGE}`);
 		const t = now();
-		const parsed = parseSchedule(rest, t);
+		const zone = zoneNow();
+		const parsed = parseSchedule(rest, t, zone);
 		const [kind, ...body] = parsed.rest;
 		const text = (kind === 'sh' ? shellJoin(body) : joinWords(body)).trim();
 		if ((kind !== 'cmd' && kind !== 'sh') || text === '') throw new Error(`After the schedule comes "cmd <console line>" or "sh <script>". Usage: ${ADD_USAGE}`);
@@ -199,6 +203,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 			if (by === 'assistant') throw new Error('An assistant cannot schedule shell scripts; ask the user to add it');
 		}
 		const job = updateJobs(deps.dataDir, state => {
+			rezoneJobs(state, zone, t);
 			if (state.jobs.length >= MAX_JOBS) throw new Error(`At most ${MAX_JOBS} jobs`);
 			if (name !== undefined && state.jobs.some(j => j.name === name)) throw new Error(`A job is already named "${name}"`);
 			const created: Job = {
@@ -217,7 +222,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 		});
 		deps.log.info('job added', {kind, schedule: job.schedule.kind, by});
 		const repeat = job.schedule.kind === 'every' ? ` (then every ${formatDuration(job.schedule.everyMs)})` : job.schedule.kind === 'cron' ? ' (then by its cron schedule)' : '';
-		ctx.print(`Scheduled #${job.id}${name ? ` ${name}` : ''}: first run ${formatTime(job.next)}${repeat}.`);
+		ctx.print(`Scheduled #${job.id}${name ? ` ${name}` : ''}: first run ${formatTime(job.next, zone)}${repeat}.`);
 	};
 
 	const find = (id: number): Job => {
@@ -237,17 +242,17 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 	const show = (id: number, ctx: CommandContext): void => {
 		const job = find(id);
 		const blocks: StyledBlock[] = [
-			jobLine(job, runner?.running.has(job.id) ?? false),
+			jobLine(job, runner?.running.has(job.id) ?? false, zoneNow()),
 			line(
 				span(`  ${job.action.kind === 'cmd' ? 'console line' : 'script'}: `, {tone: 'muted'}),
 				job.action.kind === 'cmd' ? job.action.line : job.action.script,
 			),
 		];
 		const by = job.by === 'assistant' ? ' by an assistant' : job.by === 'legacy' ? " before 0.3.0 (treated as an assistant's)" : '';
-		blocks.push(line(span(`  added ${formatTime(job.createdAt)}${by}, ran ${job.runs} time${job.runs === 1 ? '' : 's'}${job.lastRun ? `, last ${formatTime(job.lastRun)}` : ''}`, {tone: 'muted'})));
+		blocks.push(line(span(`  added ${formatTime(job.createdAt, zoneNow())}${by}, ran ${job.runs} time${job.runs === 1 ? '' : 's'}${job.lastRun ? `, last ${formatTime(job.lastRun, zoneNow())}` : ''}`, {tone: 'muted'})));
 		const runs = readRuns(deps.dataDir, id, 3);
 		for (const r of runs) {
-			blocks.push(line(`  ${formatTime(r.at)} `, statusSpan(r.status), ...(r.note ? [` (${redact(deps.log, r.note)})`] : [])));
+			blocks.push(line(`  ${formatTime(r.at, zoneNow())} `, statusSpan(r.status), ...(r.note ? [` (${redact(deps.log, r.note)})`] : [])));
 			if (r.output) blocks.push(textBlock(redact(deps.log, r.output).trimEnd().split('\n').slice(-5).map(l => `    ${oneLine(l, 200)}`).join('\n'), 'muted'));
 		}
 		printStyled(ctx, blocks);
@@ -261,7 +266,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 			return;
 		}
 		const rows = runs.map((r): StyledCell[] => [
-			span(formatTime(r.at), {tone: 'muted'}),
+			span(formatTime(r.at, zoneNow()), {tone: 'muted'}),
 			span(`#${r.id}`, {tone: 'accent'}),
 			[statusSpan(r.status), ...(r.note ? [span(` (${oneLine(redact(deps.log, r.note), 120)})`, {tone: 'muted'})] : [])],
 			span(`${(r.ms / 1000).toFixed(1)} s`, {tone: 'muted'}),
@@ -313,7 +318,7 @@ export function createSchedulerCommand(deps: SchedulerDeps): Command {
 					const job = change(idArg(rest[0], 'scheduler resume <id>'), j => {
 						delete j.paused;
 					});
-					ctx.print(`Resumed #${job.id}; next run ${formatTime(job.next)}${job.next <= now() ? ' (due now)' : ''}.`);
+					ctx.print(`Resumed #${job.id}; next run ${formatTime(job.next, zoneNow())}${job.next <= now() ? ' (due now)' : ''}.`);
 					return;
 				}
 				case 'run': {

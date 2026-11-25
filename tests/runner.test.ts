@@ -5,6 +5,7 @@ import path from 'node:path';
 import {after, describe, it} from 'node:test';
 import type {CommandBridge, CommandRunRequest, CommandRunResult} from '../../../src/api.js';
 import type {ActivityReport} from '../src/deps/core.js';
+import {systemTimeZone} from '../src/deps/core.js';
 import {noopLog} from '../src/log.js';
 import {createLeaderLock, createRunner, runSh, type RunSh} from '../src/runner.js';
 import {type Job, readJobs, readRuns, updateJobs} from '../src/store.js';
@@ -193,5 +194,78 @@ describe('runner', () => {
 		assert.ok(reports.every(x => x.source === 'scheduler' && !/secret|busy line/.test(x.label)));
 		const quiet = createRunner({dataDir: dir(), cwd: '/', log: noopLog, bridge: () => bridge, notify: () => {}});
 		await quiet.tick();
+	});
+});
+
+describe('runner zones', () => {
+	const KYIV = 'Europe/Kyiv';
+	const cronJob = (id: number, next: number) => job({id, action: {kind: 'cmd', line: 'x'}, schedule: {kind: 'cron', expr: '0 9 * * *'}, next});
+
+	it('moves the cron jobs ahead once when the zone changed, logging only the count', async () => {
+		const dataDir = dir();
+		const now = Date.UTC(2026, 10, 25, 7, 14);
+		put(dataDir, [
+			cronJob(1, Date.UTC(2026, 10, 26, 9)),
+			job({id: 2, action: {kind: 'cmd', line: 'x'}, schedule: {kind: 'every', everyMs: 3_600_000, anchor: now}, next: now + 3_600_000}),
+			job({id: 3, action: {kind: 'cmd', line: 'x'}, schedule: {kind: 'once', at: Date.UTC(2026, 10, 26, 9)}, next: Date.UTC(2026, 10, 26, 9)}),
+		]);
+		updateJobs(dataDir, s => {
+			s.zone = 'UTC';
+		});
+		const logs: Array<[string, unknown]> = [];
+		const log = {...noopLog, info: (msg: string, fields?: unknown) => void logs.push([msg, fields])};
+		const r = createRunner({dataDir, cwd: '/', log, bridge: () => undefined, notify: () => {}, now: () => now, zone: () => KYIV});
+		await r.tick();
+		const after = readJobs(dataDir);
+		assert.equal(after.zone, KYIV);
+		assert.deepEqual(after.jobs.map(j => j.next), [Date.UTC(2026, 10, 26, 7), now + 3_600_000, Date.UTC(2026, 10, 26, 9)]);
+		assert.deepEqual(logs.filter(([m]) => m === 'jobs rezoned'), [['jobs rezoned', {count: 1}]]);
+		await r.tick();
+		assert.equal(logs.filter(([m]) => m === 'jobs rezoned').length, 1, 'no second rezone');
+		r.stop();
+	});
+
+	it('leaves the jobs alone when the zone is the recorded one', async () => {
+		const dataDir = dir();
+		const now = Date.UTC(2026, 10, 25, 7, 14);
+		put(dataDir, [cronJob(1, Date.UTC(2026, 10, 26, 9))]);
+		updateJobs(dataDir, s => {
+			s.zone = KYIV;
+		});
+		const r = createRunner({dataDir, cwd: '/', log: noopLog, bridge: () => undefined, notify: () => {}, now: () => now, zone: () => KYIV});
+		await r.tick();
+		assert.equal(readJobs(dataDir).jobs[0]!.next, Date.UTC(2026, 10, 26, 9));
+		r.stop();
+	});
+});
+
+describe('runner zones, legacy files', () => {
+	const cronJob = () => job({id: 1, action: {kind: 'cmd', line: 'x'}, schedule: {kind: 'cron', expr: '0 9 * * *'}, next: Date.UTC(2026, 10, 26, 9)});
+	const now = Date.UTC(2026, 10, 25, 7, 14);
+	const other = systemTimeZone() === 'Asia/Tokyo' ? 'Europe/Kyiv' : 'Asia/Tokyo';
+
+	it('a file without a zone counts as the system zone: no change when the zone is the same', async () => {
+		const dataDir = dir();
+		put(dataDir, [cronJob()]);
+		assert.equal(readJobs(dataDir).zone, undefined);
+		const r = createRunner({dataDir, cwd: '/', log: noopLog, bridge: () => undefined, notify: () => {}, now: () => now, zone: systemTimeZone});
+		await r.tick();
+		assert.equal(readJobs(dataDir).jobs[0]!.next, Date.UTC(2026, 10, 26, 9));
+		r.stop();
+	});
+
+	it('a file without a zone is moved once when the zone differs from the system zone, and records no zone name in the log', async () => {
+		const dataDir = dir();
+		put(dataDir, [cronJob()]);
+		const logs: string[] = [];
+		const log = {...noopLog, info: (msg: string, fields?: unknown) => void logs.push(JSON.stringify([msg, fields])), warn: (msg: string, fields?: unknown) => void logs.push(JSON.stringify([msg, fields]))};
+		const r = createRunner({dataDir, cwd: '/', log, bridge: () => undefined, notify: () => {}, now: () => now, zone: () => other});
+		await r.tick();
+		const after = readJobs(dataDir);
+		assert.equal(after.zone, other);
+		assert.notEqual(after.jobs[0]!.next, Date.UTC(2026, 10, 26, 9));
+		assert.ok(logs.length > 0);
+		assert.ok(!logs.some(l => l.includes(other)), 'no zone name in log records');
+		r.stop();
 	});
 });

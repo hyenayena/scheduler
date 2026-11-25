@@ -1,6 +1,7 @@
 import {randomBytes} from 'node:crypto';
 import {appendFileSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
+import {canonicalTimeZone} from './deps/core.js';
 import type {Schedule} from './schedule.js';
 
 export type JobAction = {kind: 'cmd'; line: string} | {kind: 'sh'; script: string};
@@ -24,7 +25,9 @@ export type Job = {
 
 export type RunRecord = {id: number; at: number; ms: number; status: RunStatus; note?: string; output?: string};
 
-type JobsFile = {v: 1; nextId: number; jobs: Job[]};
+export type JobsState = {nextId: number; jobs: Job[]; zone?: string};
+
+type JobsFile = {v: 1; nextId: number; jobs: Job[]; zone?: string};
 
 export const MAX_JOBS = 100;
 export const MAX_LINE = 4096;
@@ -97,7 +100,7 @@ function parseJob(v: unknown): Job | undefined {
 	};
 }
 
-export function readJobs(dataDir: string): {nextId: number; jobs: Job[]} {
+export function readJobs(dataDir: string): JobsState {
 	const text = readText(jobsFile(dataDir));
 	if (text === undefined) return {nextId: 1, jobs: []};
 	let raw: unknown;
@@ -113,13 +116,14 @@ export function readJobs(dataDir: string): {nextId: number; jobs: Job[]} {
 	const jobs = raw.jobs.map(parseJob).filter((j): j is Job => j !== undefined);
 	const top = Math.max(0, ...jobs.map(j => j.id));
 	const nextId = Number.isInteger(raw.nextId) && (raw.nextId as number) > top ? (raw.nextId as number) : top + 1;
-	return {nextId, jobs};
+	const zone = canonicalTimeZone(raw.zone);
+	return {nextId, jobs, ...(zone !== undefined && {zone})};
 }
 
-export function updateJobs<T>(dataDir: string, change: (state: {nextId: number; jobs: Job[]}) => T): T {
+export function updateJobs<T>(dataDir: string, change: (state: JobsState) => T): T {
 	const state = readJobs(dataDir);
 	const out = change(state);
-	const file: JobsFile = {v: 1, nextId: state.nextId, jobs: state.jobs};
+	const file: JobsFile = {v: 1, nextId: state.nextId, jobs: state.jobs, ...(state.zone !== undefined && {zone: state.zone})};
 	writeAtomic(jobsFile(dataDir), JSON.stringify(file, null, '\t') + '\n');
 	return out;
 }

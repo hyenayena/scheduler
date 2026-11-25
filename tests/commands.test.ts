@@ -317,3 +317,17 @@ describe('activity wiring', () => {
 		assert.equal((sent[0]!.payload as {id: string}).id, 'job-1');
 	});
 });
+
+describe('scheduler zone', () => {
+	it('names the settings as the zone source, adds in the zone and lists in it', async () => {
+		const dataDir = path.join(root, `z${n++}`);
+		const printed: string[] = [];
+		const ctx: CommandContext = {print: t => void printed.push(t), clear() {}, exit() {}, commandBridge: bridge, headless: true};
+		const command = createSchedulerCommand({dataDir, cwd: root, log: noopLog, now: () => Date.UTC(2026, 10, 25, 7, 14), zone: () => 'Europe/Kyiv'});
+		assert.ok(command.subcommands?.find(s => s.name === 'add')?.notes?.some(t => t.includes('(the time zone in settings, Time tab)')));
+		await command.run(['add', 'daily', '10:00', 'cmd', 'task', 'list'], ctx);
+		assert.match(printed.join('\n'), /first run 2026-11-25 10:00 /);
+		assert.equal(readJobs(dataDir).jobs[0]!.next, Date.UTC(2026, 10, 25, 8, 0));
+		assert.equal(readJobs(dataDir).zone, 'Europe/Kyiv');
+	});
+});

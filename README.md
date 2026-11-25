@@ -21,10 +21,10 @@ Runs yena console lines and shell scripts later or repeatedly, so a user or an a
 - `in <duration>`: once, after the duration (`90s`, `10m`, `1h30m`, `2d`, `1w`).
 - `at <time>`: once, at `2026-10-25T09:00` (or with seconds, `Z` or an offset), `2026-10-25` (midnight) or `09:00` (the next 09:00).
 - `every <duration>`: repeatedly, the first run one interval from now; at least `1m`.
-- `daily <HH:MM>`: every day at that time.
+- `daily <HH:MM>`: every day at that time in the configured zone.
 - `cron <minute> <hour> <day-of-month> <month> <day-of-week>`: the five cron fields as separate words: `*`, `*/n`, `a`, `a-b`, `a-b/n`, lists with `,`, month and day names (`jan`, `mon`…), 0 or 7 for Sunday; with both day fields restricted, either matching is enough (as in cron).
 
-Times are the container's local time (`TZ`; UTC unless the container sets it) and are shown with the zone.
+Times are in the configured time zone (core's Time tab; the system zone, the container's `TZ`, when unset) and are shown with the zone name. Setting a zone moves the future `daily` and `cron` runs once; `in`, `at` (once, whatever its form) and `every` keep their instants.
 
 The console reads quotes (core's line words, see core's README "Console lines: words and quotes"). A `cmd` job is stored with its words re-quoted (`joinWords`), so quoted arguments keep their spaces. A `sh` job is shell text: one word is used verbatim, so quote the whole script (`sh "echo 'a b' | wc -l"`); several words are joined with spaces and a word holding whitespace or an empty one is single-quoted. Put a script that needs exact whitespace in a file and schedule `sh sh /path/to/script.sh`.
 
